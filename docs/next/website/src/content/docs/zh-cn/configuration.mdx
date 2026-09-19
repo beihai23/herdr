@@ -377,6 +377,7 @@ Agent 行支持以下内置 token：
 - `terminal_title_stripped` — 从终端标题开头移除一个可识别的活动或旋转指示符字形及其后空白后的结果。
 - `branch` — 该窗格自身检出的 Git 分支（可用时）。按窗格从其工作目录解析，因此同一工作区中运行在不同 worktree 里的窗格会显示各自的分支。
 - `worktree` — 当窗格运行在链接式 Git worktree 检出中时显示 `worktree`，否则省略。依据磁盘上的检出检测，因此在 Herdr 之外用 `git worktree add` 创建的 worktree 也会被标记。主检出中的 agent 不显示标记，而不是伪装成主检出，所以请把标记的“出现”作为判断依据。
+- `repo` — 该窗格检出所属的仓库名，不在 Git 仓库中时省略。与 `branch` 一样按窗格解析，因此主检出及其各个链接 worktree 报告相同的仓库，同时各自报告自己的分支。当同一仓库的多个 worktree 同时打开时使用它：工作区标签命名的是 worktree（Herdr 由分支推导），而标识仓库本身的是 `repo`。
 - `$name` — 名为 `name` 的自定义窗格元数据。
 
 Space 行支持以下内置 token：

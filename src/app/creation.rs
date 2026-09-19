@@ -343,6 +343,7 @@ impl App {
                 .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
             branch: pane_git.and_then(|context| context.branch.clone()),
+            repo_name: pane_git.and_then(|context| context.repo_name.clone()),
             is_linked_worktree: pane_git.is_some_and(|context| context.is_linked_worktree),
             label: terminal.manual_label.clone(),
             agent: terminal.effective_agent_label().map(str::to_string),

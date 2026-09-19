@@ -317,6 +317,7 @@ pub(super) fn agent_row(
             worktree: pane
                 .filter(|pane| pane.is_linked_worktree)
                 .map(|_| WORKTREE_MARKER),
+            repo: pane.and_then(|pane| pane.repo_name.as_deref()),
             canonical_agent,
             tokens: &tokens,
         },

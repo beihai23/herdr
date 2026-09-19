@@ -621,6 +621,7 @@ mod tests {
             cwd: None,
             foreground_cwd: None,
             branch: None,
+            repo_name: None,
             is_linked_worktree: false,
             label: None,
             agent: None,

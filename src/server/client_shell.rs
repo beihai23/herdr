@@ -121,6 +121,7 @@ pub(super) fn snapshot(
                 cwd: pane.cwd,
                 foreground_cwd: pane.foreground_cwd,
                 branch: pane.branch,
+                repo_name: pane.repo_name,
                 is_linked_worktree: pane.is_linked_worktree,
                 focused,
                 right_click_passthrough,

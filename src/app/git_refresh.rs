@@ -135,12 +135,22 @@ impl App {
         // the refresh demand alive when no space row needs it. Without this, a
         // branch configured only on agent rows would be filled once by the cwd
         // identity refresh and then never follow a branch switch.
+        //
+        // `repo` and `worktree` read the pane's repository context, which rides the
+        // same pane refresh, and `demand.branch` is also the gate that collects pane
+        // targets at all. Leaving them out would let a layout that shows only those
+        // tokens silently never render: `git_refresh_items` would collect no pane.
         for token in std::iter::once(&self.state.sidebar_agents.rows)
             .chain(self.state.sidebar_agents.rows_by_agent.values())
             .flatten()
             .flatten()
         {
-            if matches!(token.parts().0, crate::config::AgentSidebarToken::Branch) {
+            if matches!(
+                token.parts().0,
+                crate::config::AgentSidebarToken::Branch
+                    | crate::config::AgentSidebarToken::Repo
+                    | crate::config::AgentSidebarToken::Worktree
+            ) {
                 demand.branch = true;
             }
         }
@@ -169,9 +179,9 @@ impl App {
                 cache_key_hint,
             });
         }
-        // Pane context answers the agent `branch` and `worktree` tokens. Collect it
-        // only while something displays those, so configurations that do not use
-        // them keep the previous per-workspace cost.
+        // Pane context answers the agent `branch`, `repo`, and `worktree` tokens.
+        // Collect it only while something displays those, so configurations that do
+        // not use them keep the previous per-workspace cost.
         if demand.branch {
             items.extend(self.pane_git_refresh_items());
         }
@@ -267,6 +277,7 @@ fn refresh_git_statuses_with_cache_and_demand(
                     cwd,
                     demand,
                     branch: snapshot.branch.clone(),
+                    repo_name: snapshot.space.as_ref().map(|space| space.repo_name.clone()),
                     is_linked_worktree: snapshot
                         .space
                         .as_ref()
@@ -550,14 +561,61 @@ mod tests {
     }
 
     #[test]
-    fn agent_row_git_demand_ignores_rows_without_git_tokens() {
-        // `worktree` reads workspace provenance from the snapshot, not Git status,
-        // so it must not resurrect a refresh that has no consumer.
+    fn agent_repo_token_alone_keeps_pane_git_refresh_alive() {
+        // `repo` is resolved from the pane's repository context, so it needs the
+        // same pane refresh `branch` does. A layout showing only `repo` must still
+        // collect pane targets, or the token would render empty forever.
+        let mut config = crate::config::Config::default();
+        config.ui.sidebar.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        config.ui.sidebar.agents.rows = vec![
+            vec![crate::config::AgentSidebarToken::Workspace],
+            vec![crate::config::AgentSidebarToken::Repo],
+        ];
+        let mut app = test_app(&config);
+        app.state.workspaces.push(Workspace::test_new("test"));
+
+        assert_eq!(
+            app.git_refresh_demand(),
+            GitStatusRefreshDemand {
+                branch: true,
+                ahead_behind: false,
+            }
+        );
+        assert!(app.git_refresh_deadline().is_some());
+    }
+
+    #[test]
+    fn agent_worktree_token_alone_keeps_pane_git_refresh_alive() {
+        // The pane-level `worktree` marker is read from the same pane refresh as
+        // `repo`, so a marker-only layout needs pane targets collected too.
         let mut config = crate::config::Config::default();
         config.ui.sidebar.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
         config.ui.sidebar.agents.rows = vec![
             vec![crate::config::AgentSidebarToken::Workspace],
             vec![crate::config::AgentSidebarToken::Worktree],
+        ];
+        let mut app = test_app(&config);
+        app.state.workspaces.push(Workspace::test_new("test"));
+
+        assert_eq!(
+            app.git_refresh_demand(),
+            GitStatusRefreshDemand {
+                branch: true,
+                ahead_behind: false,
+            }
+        );
+        assert!(app.git_refresh_deadline().is_some());
+    }
+
+    #[test]
+    fn agent_row_git_demand_ignores_rows_without_git_tokens() {
+        // A layout with no Git token must not resurrect a refresh that has no
+        // consumer.
+        let mut config = crate::config::Config::default();
+        config.ui.sidebar.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        config.ui.sidebar.agents.rows = vec![
+            vec![crate::config::AgentSidebarToken::Workspace],
+            vec![crate::config::AgentSidebarToken::Machine],
         ];
         let mut app = test_app(&config);
         app.state.workspaces.push(Workspace::test_new("test"));
@@ -697,7 +755,10 @@ mod tests {
     }
 
     /// Point a workspace's root pane at `cwd` so `pane_git_cwd` resolves there.
-    fn app_with_pane_at(config: &crate::config::Config, cwd: &std::path::Path) -> super::super::App {
+    fn app_with_pane_at(
+        config: &crate::config::Config,
+        cwd: &std::path::Path,
+    ) -> super::super::App {
         let cwd = cwd.to_path_buf();
         let mut app = test_app(config);
         let mut ws = Workspace::test_new("pane-cwd");
@@ -763,6 +824,10 @@ mod tests {
             .expect("linked checkout pane result");
         // The two panes are in the same repository but report different branches.
         assert_ne!(main.branch, worktree.branch, "{:?}", output.pane_results);
+        // They share the repository name, which is what a row showing the repo
+        // rather than the branch renders.
+        let repo_name = main.repo_name.clone().expect("main repo name");
+        assert_eq!(worktree.repo_name.as_deref(), Some(repo_name.as_str()));
         // Worktree provenance comes from the checkout on disk, not from Herdr, so a
         // `git worktree add` checkout created outside Herdr is recognized.
         assert!(!main.is_linked_worktree);

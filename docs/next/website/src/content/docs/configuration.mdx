@@ -381,6 +381,7 @@ Agent rows accept these built-in tokens:
 - `terminal_title_stripped` — the terminal title with one recognized leading activity or spinner glyph and its following whitespace removed.
 - `branch` — Git branch of the pane's own checkout when available. Resolved per pane from the directory that pane is working in, so panes of one workspace running in different worktrees report different branches.
 - `worktree` — `worktree` when the pane runs in a linked Git worktree checkout, omitted otherwise. Detected from the checkout on disk, so a worktree created outside Herdr with `git worktree add` is marked too. An agent in a main checkout renders no marker rather than claiming to be in a main checkout, so treat the marker's presence as the signal rather than its absence.
+- `repo` — name of the repository the pane's checkout belongs to, omitted outside Git. Resolved per pane like `branch`, so a main checkout and its linked worktrees all report the same repository while each reports its own branch. Use it when several worktrees of one repository are open at once: the workspace label names the worktree (Herdr derives it from the branch), so `repo` is what identifies the repository itself.
 - `$name` — custom pane metadata named `name`.
 
 Space rows accept these built-in tokens:

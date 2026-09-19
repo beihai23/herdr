@@ -21,6 +21,7 @@ pub(crate) enum ResolvedTokenKind {
     TerminalTitle(String),
     Branch(String),
     Worktree(String),
+    Repo(String),
     GitStatus { ahead: usize, behind: usize },
     Custom(String),
 }
@@ -37,6 +38,7 @@ impl ResolvedTokenKind {
             | Self::TerminalTitle(value)
             | Self::Branch(value)
             | Self::Worktree(value)
+            | Self::Repo(value)
             | Self::Custom(value) => Some(value),
             Self::StateIcon | Self::GitStatus { .. } => None,
         }
@@ -66,6 +68,8 @@ pub(crate) struct AgentTokenContext<'a> {
     pub(crate) branch: Option<&'a str>,
     /// Marker text when the agent runs in a linked Git worktree checkout.
     pub(crate) worktree: Option<&'a str>,
+    /// Repository the agent's checkout belongs to, when available.
+    pub(crate) repo: Option<&'a str>,
     pub(crate) canonical_agent: Option<crate::detect::Agent>,
     pub(crate) tokens: &'a std::collections::HashMap<String, String>,
 }
@@ -115,6 +119,9 @@ pub(crate) fn agent_rows(
                         AgentSidebarToken::Worktree => context
                             .worktree
                             .map(|value| ResolvedTokenKind::Worktree(value.to_string())),
+                        AgentSidebarToken::Repo => context
+                            .repo
+                            .map(|value| ResolvedTokenKind::Repo(value.to_string())),
                         AgentSidebarToken::Custom(name) => context
                             .tokens
                             .get(name)
@@ -213,6 +220,7 @@ mod tests {
         terminal_title_stripped: Option<String>,
         branch: Option<String>,
         worktree: Option<String>,
+        repo: Option<String>,
         canonical_agent: Option<crate::detect::Agent>,
         tokens: std::collections::HashMap<String, String>,
     }
@@ -227,6 +235,7 @@ mod tests {
             terminal_title_stripped: None,
             branch: None,
             worktree: None,
+            repo: None,
             canonical_agent: Some(crate::detect::Agent::Pi),
             tokens: std::collections::HashMap::new(),
         }
@@ -243,6 +252,7 @@ mod tests {
             terminal_title_stripped: entry.terminal_title_stripped.as_deref(),
             branch: entry.branch.as_deref(),
             worktree: entry.worktree.as_deref(),
+            repo: entry.repo.as_deref(),
             canonical_agent: entry.canonical_agent,
             tokens: &entry.tokens,
         }

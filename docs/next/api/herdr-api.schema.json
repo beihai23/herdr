@@ -820,6 +820,13 @@
             "pane_id": {
               "type": "string"
             },
+            "repo_name": {
+              "description": "Repository the pane's checkout belongs to. Linked worktrees share this with\ntheir main checkout while having their own branch.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "revision": {
               "format": "uint64",
               "minimum": 0,
@@ -8012,6 +8019,13 @@
             },
             "pane_id": {
               "type": "string"
+            },
+            "repo_name": {
+              "description": "Repository the pane's checkout belongs to. Linked worktrees share this with\ntheir main checkout while having their own branch.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "revision": {
               "format": "uint64",

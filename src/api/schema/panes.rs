@@ -537,6 +537,10 @@ pub struct PaneInfo {
     /// Git branch of the pane's own checkout, when the pane sits inside a Git work tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// Repository the pane's checkout belongs to. Linked worktrees share this with
+    /// their main checkout while having their own branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_name: Option<String>,
     /// Whether the pane's checkout is a linked Git worktree rather than a main checkout.
     #[serde(default)]
     pub is_linked_worktree: bool,

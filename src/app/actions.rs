@@ -2610,6 +2610,7 @@ mod tests {
                 cwd,
                 demand: crate::workspace::GitStatusRefreshDemand::ALL,
                 branch: Some("feat/x".into()),
+                repo_name: Some("repo".into()),
                 is_linked_worktree: true,
             }],
         );
@@ -2617,6 +2618,7 @@ mod tests {
         assert!(changed);
         let context = state.pane_git_context.get(&pane_id).expect("pane context");
         assert_eq!(context.branch.as_deref(), Some("feat/x"));
+        assert_eq!(context.repo_name.as_deref(), Some("repo"));
         assert!(context.is_linked_worktree);
     }
 
@@ -2633,6 +2635,7 @@ mod tests {
                 cwd: std::path::PathBuf::from("/definitely/not/current"),
                 demand: crate::workspace::GitStatusRefreshDemand::ALL,
                 branch: Some("stale".into()),
+                repo_name: None,
                 is_linked_worktree: false,
             }],
         );
@@ -2664,6 +2667,7 @@ mod tests {
                     ahead_behind: true,
                 },
                 branch: Some("unwanted".into()),
+                repo_name: None,
                 is_linked_worktree: false,
             }],
         );
@@ -2682,6 +2686,7 @@ mod tests {
             crate::workspace::PaneGitContext {
                 cwd: std::path::PathBuf::from("/gone"),
                 branch: Some("gone".into()),
+                repo_name: None,
                 is_linked_worktree: false,
             },
         );
@@ -2690,6 +2695,7 @@ mod tests {
             crate::workspace::PaneGitContext {
                 cwd: std::path::PathBuf::from("/kept"),
                 branch: Some("kept".into()),
+                repo_name: None,
                 is_linked_worktree: false,
             },
         );

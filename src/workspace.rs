@@ -67,6 +67,10 @@ pub struct WorkspaceGitStatusSnapshot {
 /// instead of per workspace. `is_linked_worktree` is detected from the checkout on
 /// disk (`.git` file pointing at another Git dir), not from Herdr-managed worktree
 /// provenance, so checkouts created with plain `git worktree add` are recognized too.
+///
+/// `repo_name` is the repository the checkout belongs to, which linked worktrees
+/// share with their main checkout even though each has its own branch and its own
+/// directory name. It is what distinguishes "which repo" from "which branch".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneGitStatus {
     pub pane_id: crate::layout::PaneId,
@@ -74,6 +78,7 @@ pub struct PaneGitStatus {
     pub cwd: PathBuf,
     pub demand: GitStatusRefreshDemand,
     pub branch: Option<String>,
+    pub repo_name: Option<String>,
     pub is_linked_worktree: bool,
 }
 
@@ -82,6 +87,7 @@ pub struct PaneGitStatus {
 pub struct PaneGitContext {
     pub cwd: PathBuf,
     pub branch: Option<String>,
+    pub repo_name: Option<String>,
     pub is_linked_worktree: bool,
 }
 
@@ -90,6 +96,7 @@ impl PaneGitStatus {
         PaneGitContext {
             cwd: self.cwd,
             branch: self.branch,
+            repo_name: self.repo_name,
             is_linked_worktree: self.is_linked_worktree,
         }
     }

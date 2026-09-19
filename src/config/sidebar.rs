@@ -117,6 +117,7 @@ pub enum AgentSidebarToken {
     TerminalTitleStripped,
     Branch,
     Worktree,
+    Repo,
     Custom(String),
     Styled {
         token: Box<AgentSidebarToken>,
@@ -283,6 +284,7 @@ fn agent_token_name(token: &AgentSidebarToken) -> String {
         AgentSidebarToken::TerminalTitleStripped => "terminal_title_stripped".into(),
         AgentSidebarToken::Branch => "branch".into(),
         AgentSidebarToken::Worktree => "worktree".into(),
+        AgentSidebarToken::Repo => "repo".into(),
         AgentSidebarToken::Custom(name) => format!("${name}"),
         AgentSidebarToken::Styled { token, .. } => agent_token_name(token),
     }
@@ -344,6 +346,7 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
                 ("terminal_title_stripped", Self::TerminalTitleStripped),
                 ("branch", Self::Branch),
                 ("worktree", Self::Worktree),
+                ("repo", Self::Repo),
             ],
         )
         .map_err(serde::de::Error::custom)?;
@@ -554,6 +557,31 @@ rows = [
         let encoded = toml::to_string(&config.ui.sidebar.agents).expect("serialize");
         assert!(encoded.contains("#ffc799"), "{encoded}");
         assert!(encoded.contains("#99ffe4"), "{encoded}");
+    }
+
+    #[test]
+    fn agent_repo_token_parses_and_round_trips() {
+        let config: crate::config::Config = toml::from_str(
+            r##"
+[ui.sidebar.agents]
+rows = [
+  [{ token = "repo", fg = "#7e7e7e" }],
+  [{ token = "branch", fg = "#a0a0a0" }],
+]
+"##,
+        )
+        .expect("styled agent repo token parses");
+
+        let rows = &config.ui.sidebar.agents.rows;
+        let (repo, repo_style) = rows[0][0].parts();
+        assert_eq!(repo, &AgentSidebarToken::Repo);
+        assert!(repo_style.fg.is_some(), "repo needs its own tone");
+
+        let encoded = toml::to_string(&config.ui.sidebar.agents).expect("serialize");
+        assert!(encoded.contains("repo"), "{encoded}");
+        assert!(encoded.contains("#7e7e7e"), "{encoded}");
+        let decoded: AgentsSidebarConfig = toml::from_str(&encoded).expect("deserialize");
+        assert_eq!(decoded.rows, config.ui.sidebar.agents.rows);
     }
 
     #[test]

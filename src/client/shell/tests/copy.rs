@@ -1085,6 +1085,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
         cwd: Some("/repo".into()),
         foreground_cwd: Some("/repo".into()),
         branch: None,
+        repo_name: None,
         is_linked_worktree: false,
         focused: true,
         right_click_passthrough: false,

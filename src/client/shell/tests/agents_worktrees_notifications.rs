@@ -102,6 +102,7 @@ fn agent_rows_show_each_panes_own_branch_and_mark_linked_worktrees() {
         cwd: Some("/repo".into()),
         foreground_cwd: Some("/repo/.worktrees/feat-x".into()),
         branch: Some("feat-x".into()),
+        repo_name: Some("repo".into()),
         is_linked_worktree: true,
         focused: false,
         right_click_passthrough: false,
@@ -235,6 +236,134 @@ fn agent_branch_elides_for_a_pane_outside_git() {
     assert!(
         !lines[agent_line + 1].contains("·"),
         "branch row should not render: {lines:#?}"
+    );
+}
+
+#[test]
+fn agent_rows_show_the_pane_repository_shared_by_main_and_linked_checkouts() {
+    // A main checkout and a linked worktree of one repository. `repo` must read the
+    // same on both rows while `branch` is what separates them, and all three rows
+    // must survive the width layout intact.
+    let mut projected = snapshot();
+    projected.panes[0].branch = Some("trunk".into());
+    projected.panes[0].repo_name = Some("herdr".into());
+    projected.panes.push(ClientShellPane {
+        pane_id: "pane_2".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        label: None,
+        cwd: Some("/repo".into()),
+        foreground_cwd: Some("/repo/.worktrees/feat-x".into()),
+        branch: Some("feat-worktree".into()),
+        repo_name: Some("herdr".into()),
+        is_linked_worktree: true,
+        focused: false,
+        right_click_passthrough: false,
+    });
+    projected.agents = vec![
+        agent_entry("pane_1", "pi one", 1, true),
+        agent_entry("pane_2", "pi two", 2, false),
+    ];
+    let mut config = Config::default();
+    config.ui.sidebar.agents.rows = vec![
+        vec![crate::config::AgentSidebarToken::Agent],
+        vec![crate::config::AgentSidebarToken::Repo],
+        vec![crate::config::AgentSidebarToken::Branch],
+    ];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("agent sidebar frame");
+    let lines = frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+
+    // Rows render in configured order under their agent row, and `repo` is what
+    // both checkouts agree on. Asserting the real frame is deliberate: a token
+    // missing from the width table renders empty without any error.
+    for (name, branch) in [("pi one", "trunk"), ("pi two", "feat-worktree")] {
+        let index = lines
+            .iter()
+            .position(|line| line.contains(name))
+            .unwrap_or_else(|| panic!("agent row {name} missing: {lines:#?}"));
+        assert!(
+            lines[index + 1].contains("herdr"),
+            "repo row for {name} missing: {lines:#?}"
+        );
+        assert!(
+            lines[index + 2].contains(branch),
+            "branch row for {name} missing: {lines:#?}"
+        );
+    }
+}
+
+fn agent_entry(
+    pane_id: &str,
+    name: &str,
+    state_change_seq: u64,
+    focused: bool,
+) -> ClientShellAgent {
+    ClientShellAgent {
+        pane_id: pane_id.into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some(name.into()),
+        display_agent: None,
+        agent: Some("pi".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Idle,
+        state_change_seq,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused,
+    }
+}
+
+#[test]
+fn agent_repo_elides_for_a_pane_outside_git() {
+    let mut projected = snapshot();
+    projected.panes[0].branch = None;
+    projected.panes[0].repo_name = None;
+    projected.panes[0].is_linked_worktree = false;
+    projected.agents = vec![agent_entry("pane_1", "pi plain", 1, true)];
+    let mut config = Config::default();
+    config.ui.sidebar.agents.rows = vec![
+        vec![crate::config::AgentSidebarToken::Agent],
+        vec![crate::config::AgentSidebarToken::Repo],
+        vec![crate::config::AgentSidebarToken::Branch],
+    ];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("agent sidebar frame");
+    let lines = frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    let agent_line = lines
+        .iter()
+        .position(|line| line.contains("pi plain"))
+        .unwrap_or_else(|| panic!("agent row missing: {lines:#?}"));
+
+    // Both Git rows collapse, so the agent entry is a single line.
+    assert!(
+        !lines[agent_line + 1].contains("·"),
+        "repo and branch rows should not render: {lines:#?}"
     );
 }
 
