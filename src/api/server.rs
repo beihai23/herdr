@@ -1003,6 +1003,8 @@ mod tests {
             focused: true,
             cwd: None,
             foreground_cwd: None,
+            branch: None,
+            is_linked_worktree: false,
             label: None,
             agent: Some("pi".into()),
             title: None,

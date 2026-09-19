@@ -31,9 +31,10 @@ impl App {
     pub(crate) fn handle_internal_event_with_render_impact(&mut self, ev: AppEvent) -> bool {
         match ev {
             AppEvent::GitStatusRefreshed {
-                results,
+                workspace_results,
+                pane_results,
                 cache_updates,
-            } => self.handle_git_status_refreshed(results, cache_updates),
+            } => self.handle_git_status_refreshed(workspace_results, pane_results, cache_updates),
             AppEvent::TabBarCommandFinished {
                 generation,
                 segment_index,
@@ -52,7 +53,8 @@ impl App {
 
     fn handle_git_status_refreshed(
         &mut self,
-        results: Vec<crate::workspace::WorkspaceGitStatus>,
+        workspace_results: Vec<crate::workspace::WorkspaceGitStatus>,
+        pane_results: Vec<crate::workspace::PaneGitStatus>,
         cache_updates: Vec<(std::path::PathBuf, crate::workspace::GitStatusCacheEntry)>,
     ) -> bool {
         self.git_refresh_in_flight = false;
@@ -65,9 +67,13 @@ impl App {
         } else {
             self.last_git_remote_status_refresh = Instant::now();
         }
-        let changed = self
+        let workspace_changed = self
             .state
-            .apply_workspace_git_statuses(&self.terminal_runtimes, results);
+            .apply_workspace_git_statuses(&self.terminal_runtimes, workspace_results);
+        let pane_changed = self
+            .state
+            .apply_pane_git_statuses(&self.terminal_runtimes, pane_results);
+        let changed = workspace_changed || pane_changed;
         if changed {
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
@@ -108,11 +114,12 @@ impl App {
         }
 
         if let AppEvent::GitStatusRefreshed {
-            results,
+            workspace_results,
+            pane_results,
             cache_updates,
         } = ev
         {
-            self.handle_git_status_refreshed(results, cache_updates);
+            self.handle_git_status_refreshed(workspace_results, pane_results, cache_updates);
             return Vec::new();
         }
 

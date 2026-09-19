@@ -778,6 +778,13 @@
             "agent_status": {
               "$ref": "#/schemas/event/$defs/AgentStatus"
             },
+            "branch": {
+              "description": "Git branch of the pane's own checkout, when the pane sits inside a Git work tree.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "cwd": {
               "type": [
                 "string",
@@ -798,6 +805,11 @@
                 "string",
                 "null"
               ]
+            },
+            "is_linked_worktree": {
+              "default": false,
+              "description": "Whether the pane's checkout is a linked Git worktree rather than a main checkout.",
+              "type": "boolean"
             },
             "label": {
               "type": [
@@ -7959,6 +7971,13 @@
             "agent_status": {
               "$ref": "#/schemas/success_response/$defs/AgentStatus"
             },
+            "branch": {
+              "description": "Git branch of the pane's own checkout, when the pane sits inside a Git work tree.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "cwd": {
               "type": [
                 "string",
@@ -7979,6 +7998,11 @@
                 "string",
                 "null"
               ]
+            },
+            "is_linked_worktree": {
+              "default": false,
+              "description": "Whether the pane's checkout is a linked Git worktree rather than a main checkout.",
+              "type": "boolean"
             },
             "label": {
               "type": [

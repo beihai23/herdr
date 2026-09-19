@@ -1440,6 +1440,46 @@ impl AppState {
         changed
     }
 
+    pub fn apply_pane_git_statuses(
+        &mut self,
+        terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
+        results: Vec<crate::workspace::PaneGitStatus>,
+    ) -> bool {
+        let mut changed = false;
+        for result in results {
+            let pane_id = result.pane_id;
+            let current_cwd = self
+                .workspaces
+                .iter()
+                .find_map(|ws| ws.pane_git_cwd(pane_id, &self.terminals, terminal_runtimes));
+            if current_cwd.as_deref() != Some(result.cwd.as_path()) {
+                // The pane moved since this snapshot was computed; a later refresh
+                // will publish the status for its new cwd.
+                continue;
+            }
+            if !result.demand.branch {
+                continue;
+            }
+            let context = result.into_context();
+            if self.pane_git_context.get(&pane_id) != Some(&context) {
+                self.pane_git_context.insert(pane_id, context);
+                changed = true;
+            }
+        }
+
+        let live = self
+            .workspaces
+            .iter()
+            .flat_map(|ws| ws.tabs.iter())
+            .flat_map(|tab| tab.panes.keys().copied())
+            .collect::<std::collections::HashSet<_>>();
+        let before = self.pane_git_context.len();
+        self.pane_git_context
+            .retain(|pane_id, _| live.contains(pane_id));
+
+        changed || self.pane_git_context.len() != before
+    }
+
     pub fn handle_app_event(&mut self, event: AppEvent) -> Vec<PaneStateUpdate> {
         match event {
             AppEvent::PaneDied { pane_id, .. } => {
@@ -1664,11 +1704,11 @@ impl AppState {
                 Vec::new()
             }
             AppEvent::GitStatusRefreshed {
-                results,
+                workspace_results,
+                pane_results,
                 cache_updates,
             } => {
-                let _ = results;
-                let _ = cache_updates;
+                let _ = (workspace_results, pane_results, cache_updates);
                 Vec::new()
             }
             AppEvent::WorktreeAddFinished(_) => Vec::new(),
@@ -2548,6 +2588,118 @@ mod tests {
             None
         );
         assert_eq!(selected_url("open file:///tmp/report", "file"), None);
+    }
+
+    #[test]
+    fn apply_pane_git_statuses_stores_branch_and_worktree_marker() {
+        let mut state = app_with_workspaces(&["one"]);
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
+        let cwd = state.workspaces[0]
+            .pane_git_cwd(
+                pane_id,
+                &state.terminals,
+                &crate::terminal::TerminalRuntimeRegistry::new(),
+            )
+            .expect("pane cwd");
+
+        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let changed = state.apply_pane_git_statuses(
+            &terminal_runtimes,
+            vec![crate::workspace::PaneGitStatus {
+                pane_id,
+                cwd,
+                demand: crate::workspace::GitStatusRefreshDemand::ALL,
+                branch: Some("feat/x".into()),
+                is_linked_worktree: true,
+            }],
+        );
+
+        assert!(changed);
+        let context = state.pane_git_context.get(&pane_id).expect("pane context");
+        assert_eq!(context.branch.as_deref(), Some("feat/x"));
+        assert!(context.is_linked_worktree);
+    }
+
+    #[test]
+    fn apply_pane_git_statuses_ignores_stale_cwd() {
+        let mut state = app_with_workspaces(&["one"]);
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
+        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+
+        let changed = state.apply_pane_git_statuses(
+            &terminal_runtimes,
+            vec![crate::workspace::PaneGitStatus {
+                pane_id,
+                cwd: std::path::PathBuf::from("/definitely/not/current"),
+                demand: crate::workspace::GitStatusRefreshDemand::ALL,
+                branch: Some("stale".into()),
+                is_linked_worktree: false,
+            }],
+        );
+
+        assert!(!changed);
+        assert!(state.pane_git_context.is_empty());
+    }
+
+    #[test]
+    fn apply_pane_git_statuses_ignores_unrequested_branch_changes() {
+        let mut state = app_with_workspaces(&["one"]);
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
+        let cwd = state.workspaces[0]
+            .pane_git_cwd(
+                pane_id,
+                &state.terminals,
+                &crate::terminal::TerminalRuntimeRegistry::new(),
+            )
+            .expect("pane cwd");
+        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+
+        let changed = state.apply_pane_git_statuses(
+            &terminal_runtimes,
+            vec![crate::workspace::PaneGitStatus {
+                pane_id,
+                cwd,
+                demand: crate::workspace::GitStatusRefreshDemand {
+                    branch: false,
+                    ahead_behind: true,
+                },
+                branch: Some("unwanted".into()),
+                is_linked_worktree: false,
+            }],
+        );
+
+        assert!(!changed);
+        assert!(state.pane_git_context.is_empty());
+    }
+
+    #[test]
+    fn apply_pane_git_statuses_drops_context_for_closed_panes() {
+        let mut state = app_with_workspaces(&["one"]);
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
+        let closed_pane = crate::layout::PaneId::alloc();
+        state.pane_git_context.insert(
+            closed_pane,
+            crate::workspace::PaneGitContext {
+                cwd: std::path::PathBuf::from("/gone"),
+                branch: Some("gone".into()),
+                is_linked_worktree: false,
+            },
+        );
+        state.pane_git_context.insert(
+            pane_id,
+            crate::workspace::PaneGitContext {
+                cwd: std::path::PathBuf::from("/kept"),
+                branch: Some("kept".into()),
+                is_linked_worktree: false,
+            },
+        );
+
+        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let changed = state.apply_pane_git_statuses(&terminal_runtimes, Vec::new());
+
+        assert!(changed, "dropping a closed pane's context is a change");
+        assert!(state.pane_git_context.contains_key(&pane_id));
+        assert!(!state.pane_git_context.contains_key(&closed_pane));
     }
 
     #[test]

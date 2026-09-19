@@ -20,6 +20,7 @@ pub(crate) enum ResolvedTokenKind {
     Agent(String),
     TerminalTitle(String),
     Branch(String),
+    Worktree(String),
     GitStatus { ahead: usize, behind: usize },
     Custom(String),
 }
@@ -35,6 +36,7 @@ impl ResolvedTokenKind {
             | Self::Agent(value)
             | Self::TerminalTitle(value)
             | Self::Branch(value)
+            | Self::Worktree(value)
             | Self::Custom(value) => Some(value),
             Self::StateIcon | Self::GitStatus { .. } => None,
         }
@@ -60,6 +62,10 @@ pub(crate) struct AgentTokenContext<'a> {
     pub(crate) agent_label: Option<&'a str>,
     pub(crate) terminal_title: Option<&'a str>,
     pub(crate) terminal_title_stripped: Option<&'a str>,
+    /// Git branch of the agent's workspace, when available.
+    pub(crate) branch: Option<&'a str>,
+    /// Marker text when the agent runs in a linked Git worktree checkout.
+    pub(crate) worktree: Option<&'a str>,
     pub(crate) canonical_agent: Option<crate::detect::Agent>,
     pub(crate) tokens: &'a std::collections::HashMap<String, String>,
 }
@@ -103,6 +109,12 @@ pub(crate) fn agent_rows(
                         AgentSidebarToken::TerminalTitleStripped => context
                             .terminal_title_stripped
                             .map(|value| ResolvedTokenKind::TerminalTitle(value.to_string())),
+                        AgentSidebarToken::Branch => context
+                            .branch
+                            .map(|value| ResolvedTokenKind::Branch(value.to_string())),
+                        AgentSidebarToken::Worktree => context
+                            .worktree
+                            .map(|value| ResolvedTokenKind::Worktree(value.to_string())),
                         AgentSidebarToken::Custom(name) => context
                             .tokens
                             .get(name)
@@ -199,6 +211,8 @@ mod tests {
         agent_label: Option<String>,
         terminal_title: Option<String>,
         terminal_title_stripped: Option<String>,
+        branch: Option<String>,
+        worktree: Option<String>,
         canonical_agent: Option<crate::detect::Agent>,
         tokens: std::collections::HashMap<String, String>,
     }
@@ -211,6 +225,8 @@ mod tests {
             agent_label: Some("pi".into()),
             terminal_title: None,
             terminal_title_stripped: None,
+            branch: None,
+            worktree: None,
             canonical_agent: Some(crate::detect::Agent::Pi),
             tokens: std::collections::HashMap::new(),
         }
@@ -225,6 +241,8 @@ mod tests {
             agent_label: entry.agent_label.as_deref(),
             terminal_title: entry.terminal_title.as_deref(),
             terminal_title_stripped: entry.terminal_title_stripped.as_deref(),
+            branch: entry.branch.as_deref(),
+            worktree: entry.worktree.as_deref(),
             canonical_agent: entry.canonical_agent,
             tokens: &entry.tokens,
         }
@@ -397,6 +415,57 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             let rows = agent_rows(&config, context(&entry), "working");
             assert_eq!(rows[0][0].kind, ResolvedTokenKind::Agent("pi".into()));
         }
+    }
+
+    #[test]
+    fn agent_branch_and_worktree_tokens_resolve_from_workspace_context() {
+        let mut entry = entry();
+        entry.branch = Some("worktree/api".into());
+        entry.worktree = Some("worktree".into());
+        let config = AgentsSidebarConfig {
+            rows: vec![vec![
+                AgentSidebarToken::Workspace,
+                AgentSidebarToken::Branch,
+                AgentSidebarToken::Worktree,
+            ]],
+            ..Default::default()
+        };
+
+        let rows = agent_rows(&config, context(&entry), "working");
+
+        assert_eq!(
+            rows[0],
+            vec![
+                ResolvedToken::unstyled(ResolvedTokenKind::Workspace("repo".into())),
+                ResolvedToken::unstyled(ResolvedTokenKind::Branch("worktree/api".into())),
+                ResolvedToken::unstyled(ResolvedTokenKind::Worktree("worktree".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn agent_git_tokens_elide_without_workspace_git_context() {
+        // A non-Git workspace has no branch and no worktree provenance, so both
+        // rows disappear instead of rendering empty separators.
+        let entry = entry();
+        let config = AgentsSidebarConfig {
+            rows: vec![
+                vec![AgentSidebarToken::Branch],
+                vec![AgentSidebarToken::Worktree],
+                vec![AgentSidebarToken::Agent],
+            ],
+            ..Default::default()
+        };
+
+        let rows = agent_rows(&config, context(&entry), "working");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0],
+            vec![ResolvedToken::unstyled(ResolvedTokenKind::Agent(
+                "pi".into()
+            ))]
+        );
     }
 
     #[test]

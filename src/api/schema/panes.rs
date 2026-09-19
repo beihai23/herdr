@@ -534,6 +534,12 @@ pub struct PaneInfo {
     pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_cwd: Option<String>,
+    /// Git branch of the pane's own checkout, when the pane sits inside a Git work tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// Whether the pane's checkout is a linked Git worktree rather than a main checkout.
+    #[serde(default)]
+    pub is_linked_worktree: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

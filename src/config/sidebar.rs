@@ -115,6 +115,8 @@ pub enum AgentSidebarToken {
     Agent,
     TerminalTitle,
     TerminalTitleStripped,
+    Branch,
+    Worktree,
     Custom(String),
     Styled {
         token: Box<AgentSidebarToken>,
@@ -279,6 +281,8 @@ fn agent_token_name(token: &AgentSidebarToken) -> String {
         AgentSidebarToken::Agent => "agent".into(),
         AgentSidebarToken::TerminalTitle => "terminal_title".into(),
         AgentSidebarToken::TerminalTitleStripped => "terminal_title_stripped".into(),
+        AgentSidebarToken::Branch => "branch".into(),
+        AgentSidebarToken::Worktree => "worktree".into(),
         AgentSidebarToken::Custom(name) => format!("${name}"),
         AgentSidebarToken::Styled { token, .. } => agent_token_name(token),
     }
@@ -338,6 +342,8 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
                 ("agent", Self::Agent),
                 ("terminal_title", Self::TerminalTitle),
                 ("terminal_title_stripped", Self::TerminalTitleStripped),
+                ("branch", Self::Branch),
+                ("worktree", Self::Worktree),
             ],
         )
         .map_err(serde::de::Error::custom)?;
@@ -511,6 +517,80 @@ mod tests {
             ]
         );
         assert_eq!(config.spaces.row_gap, 0);
+    }
+
+    #[test]
+    fn agent_git_tokens_accept_inline_styles() {
+        // Mirrors the shipped config shape: a styled worktree badge next to the
+        // agent name and a styled branch on its own row.
+        let config: crate::config::Config = toml::from_str(
+            r##"
+[ui.sidebar.agents]
+rows = [
+  ["state_icon", "machine", "workspace", "tab"],
+  ["agent", { token = "worktree", fg = "#ffc799" }],
+  [{ token = "branch", fg = "#99ffe4" }],
+  ["terminal_title_stripped"],
+]
+"##,
+        )
+        .expect("styled agent Git tokens parse");
+
+        let rows = &config.ui.sidebar.agents.rows;
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].len(), 4);
+        assert_eq!(rows[1][0], AgentSidebarToken::Agent);
+
+        let (badge, badge_style) = rows[1][1].parts();
+        assert_eq!(badge, &AgentSidebarToken::Worktree);
+        assert!(badge_style.fg.is_some(), "worktree badge needs its accent");
+
+        let (branch, branch_style) = rows[2][0].parts();
+        assert_eq!(branch, &AgentSidebarToken::Branch);
+        assert!(branch_style.fg.is_some(), "branch needs its accent");
+
+        // The round trip is what actually proves the colors survive, since the
+        // color fields are private and cannot be compared directly.
+        let encoded = toml::to_string(&config.ui.sidebar.agents).expect("serialize");
+        assert!(encoded.contains("#ffc799"), "{encoded}");
+        assert!(encoded.contains("#99ffe4"), "{encoded}");
+    }
+
+    #[test]
+    fn agent_rows_accept_git_tokens_shared_with_space_rows() {
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[ui.sidebar.agents]
+rows = [["state_icon", "workspace", "branch"], ["agent", "worktree"]]
+"#,
+        )
+        .expect("agent Git tokens parse as builtins");
+
+        assert_eq!(
+            config.ui.sidebar.agents.rows,
+            vec![
+                vec![
+                    AgentSidebarToken::StateIcon,
+                    AgentSidebarToken::Workspace,
+                    AgentSidebarToken::Branch,
+                ],
+                vec![AgentSidebarToken::Agent, AgentSidebarToken::Worktree],
+            ]
+        );
+    }
+
+    #[test]
+    fn agent_git_tokens_round_trip_through_serialization() {
+        let rows = vec![vec![AgentSidebarToken::Branch, AgentSidebarToken::Worktree]];
+        let config = AgentsSidebarConfig {
+            rows: rows.clone(),
+            ..Default::default()
+        };
+
+        let encoded = toml::to_string(&config).expect("serialize agent Git tokens");
+        let decoded: AgentsSidebarConfig = toml::from_str(&encoded).expect("deserialize");
+
+        assert_eq!(decoded.rows, rows);
     }
 
     #[test]

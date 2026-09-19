@@ -1068,6 +1068,12 @@ pub struct ClientShellPane {
     pub label: Option<String>,
     pub cwd: Option<String>,
     pub foreground_cwd: Option<String>,
+    /// Git branch of the pane's own checkout, when known.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Whether the pane's checkout is a linked Git worktree rather than a main checkout.
+    #[serde(default)]
+    pub is_linked_worktree: bool,
     pub focused: bool,
     pub right_click_passthrough: bool,
 }
@@ -2736,6 +2742,8 @@ mod tests {
                 label: None,
                 cwd: Some("/repo".into()),
                 foreground_cwd: Some("/repo".into()),
+                branch: None,
+                is_linked_worktree: false,
                 focused: true,
                 right_click_passthrough: false,
             }],

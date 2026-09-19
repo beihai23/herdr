@@ -90,6 +90,155 @@ fn collapsed_workspace_jitter_remains_a_click() {
 }
 
 #[test]
+fn agent_rows_show_each_panes_own_branch_and_mark_linked_worktrees() {
+    // One workspace, two panes: the pane running in a linked worktree must report
+    // that worktree's branch, not the branch of the pane next to it.
+    let mut projected = snapshot();
+    projected.panes.push(ClientShellPane {
+        pane_id: "pane_2".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        label: None,
+        cwd: Some("/repo".into()),
+        foreground_cwd: Some("/repo/.worktrees/feat-x".into()),
+        branch: Some("feat-x".into()),
+        is_linked_worktree: true,
+        focused: false,
+        right_click_passthrough: false,
+    });
+    projected.agents = vec![
+        ClientShellAgent {
+            pane_id: "pane_1".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some("pi main".into()),
+            display_agent: None,
+            agent: Some("pi".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: AgentStatus::Idle,
+            state_change_seq: 1,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: true,
+        },
+        ClientShellAgent {
+            pane_id: "pane_2".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some("pi linked".into()),
+            display_agent: None,
+            agent: Some("pi".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: AgentStatus::Idle,
+            state_change_seq: 2,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        },
+    ];
+    let mut config = Config::default();
+    config.ui.sidebar.agents.rows = vec![
+        vec![
+            crate::config::AgentSidebarToken::Agent,
+            crate::config::AgentSidebarToken::Worktree,
+        ],
+        vec![crate::config::AgentSidebarToken::Branch],
+    ];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("agent sidebar frame");
+    let lines = frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    let main_line = lines
+        .iter()
+        .find(|line| line.contains("pi main"))
+        .unwrap_or_else(|| panic!("main agent row missing: {lines:#?}"));
+    let linked_line = lines
+        .iter()
+        .find(|line| line.contains("pi linked"))
+        .unwrap_or_else(|| panic!("linked agent row missing: {lines:#?}"));
+
+    // Each pane reports the branch of its own checkout, not a workspace-wide one.
+    assert!(
+        lines.iter().any(|line| line.contains("main")),
+        "pane_1 branch missing: {lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("feat-x")),
+        "pane_2 branch missing: {lines:#?}"
+    );
+    // Only the linked checkout is marked; the main checkout claims nothing.
+    assert!(!main_line.contains("worktree"), "{main_line}");
+    assert!(linked_line.contains("worktree"), "{linked_line}");
+}
+
+#[test]
+fn agent_branch_elides_for_a_pane_outside_git() {
+    let mut projected = snapshot();
+    projected.panes[0].branch = None;
+    projected.panes[0].is_linked_worktree = false;
+    projected.agents = vec![ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some("pi plain".into()),
+        display_agent: None,
+        agent: Some("pi".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Idle,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: true,
+    }];
+    let mut config = Config::default();
+    config.ui.sidebar.agents.rows = vec![
+        vec![crate::config::AgentSidebarToken::Agent],
+        vec![crate::config::AgentSidebarToken::Branch],
+        vec![crate::config::AgentSidebarToken::Worktree],
+    ];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("agent sidebar frame");
+    let lines = frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    let agent_line = lines
+        .iter()
+        .position(|line| line.contains("pi plain"))
+        .unwrap_or_else(|| panic!("agent row missing: {lines:#?}"));
+
+    // Both Git rows collapse, so the agent entry is a single line.
+    assert!(
+        !lines[agent_line + 1].contains("·"),
+        "branch row should not render: {lines:#?}"
+    );
+}
+
+#[test]
 fn grouped_worktrees_render_parent_branch_and_indented_child() {
     let config = ClientShellConfig::from_config(&Config::default());
     let mut state = ClientShellState::new(config);

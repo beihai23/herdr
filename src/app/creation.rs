@@ -328,6 +328,8 @@ impl App {
                 .focused_pane_id()
                 .is_some_and(|focused| focused == pane_id);
         let presentation = terminal.effective_presentation();
+        // Refreshed off the main loop; absent until the first Git refresh completes.
+        let pane_git = self.state.pane_git_context.get(&pane_id);
         Some(crate::api::schema::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
             terminal_id: terminal.id.to_string(),
@@ -340,6 +342,8 @@ impl App {
             foreground_cwd: ws.tabs[tab_idx]
                 .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
+            branch: pane_git.and_then(|context| context.branch.clone()),
+            is_linked_worktree: pane_git.is_some_and(|context| context.is_linked_worktree),
             label: terminal.manual_label.clone(),
             agent: terminal.effective_agent_label().map(str::to_string),
             title: presentation.title,

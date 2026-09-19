@@ -136,6 +136,7 @@ pub(crate) fn resolved_token_spans(
             | ResolvedTokenKind::Agent(text)
             | ResolvedTokenKind::TerminalTitle(text)
             | ResolvedTokenKind::Branch(text)
+            | ResolvedTokenKind::Worktree(text)
             | ResolvedTokenKind::Custom(text) => display_width(text),
             _ => 0,
         })
@@ -239,7 +240,8 @@ pub(crate) fn resolved_token_spans(
             | ResolvedTokenKind::Tab(text)
             | ResolvedTokenKind::Pane(text)
             | ResolvedTokenKind::Agent(text)
-            | ResolvedTokenKind::Branch(text) => spans.push(Span::styled(
+            | ResolvedTokenKind::Branch(text)
+            | ResolvedTokenKind::Worktree(text) => spans.push(Span::styled(
                 truncate_end(text, budgets[index]),
                 apply_token_style(secondary_style, token.style),
             )),

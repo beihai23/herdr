@@ -447,6 +447,7 @@ impl App {
             pane_id_aliases: std::collections::HashMap::new(),
             public_pane_id_aliases: std::collections::HashMap::new(),
             workspaces,
+            pane_git_context: std::collections::HashMap::new(),
             active,
             previous_pane_focus: None,
             selected,
@@ -1045,7 +1046,8 @@ mod tests {
         app.git_refresh_in_flight = true;
 
         let changed = app.handle_internal_event_with_render_impact(AppEvent::GitStatusRefreshed {
-            results: Vec::new(),
+            workspace_results: Vec::new(),
+            pane_results: Vec::new(),
             cache_updates: Vec::new(),
         });
 
@@ -1092,7 +1094,8 @@ mod tests {
         app.last_git_remote_status_refresh = previous_refresh;
 
         app.handle_internal_event(AppEvent::GitStatusRefreshed {
-            results: Vec::new(),
+            workspace_results: Vec::new(),
+            pane_results: Vec::new(),
             cache_updates: Vec::new(),
         });
 
@@ -1109,7 +1112,7 @@ mod tests {
         let resolved_identity_cwd = app.state.workspaces[0].resolved_identity_cwd().unwrap();
 
         app.handle_internal_event(AppEvent::GitStatusRefreshed {
-            results: vec![crate::workspace::WorkspaceGitStatus {
+            workspace_results: vec![crate::workspace::WorkspaceGitStatus {
                 workspace_id,
                 resolved_identity_cwd: resolved_identity_cwd.clone(),
                 status_cache_key: resolved_identity_cwd,
@@ -1119,6 +1122,7 @@ mod tests {
                 ahead_behind: Some((1, 0)),
                 space: None,
             }],
+            pane_results: Vec::new(),
             cache_updates: Vec::new(),
         });
 
@@ -1265,7 +1269,8 @@ mod tests {
         app.git_refresh_in_flight = true;
         app.event_tx
             .try_send(AppEvent::GitStatusRefreshed {
-                results: Vec::new(),
+                workspace_results: Vec::new(),
+                pane_results: Vec::new(),
                 cache_updates: Vec::new(),
             })
             .unwrap();

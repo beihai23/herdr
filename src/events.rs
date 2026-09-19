@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use crate::detect::{Agent, AgentState};
 use crate::layout::PaneId;
-use crate::workspace::{GitStatusCacheEntry, WorkspaceGitStatus};
+use crate::workspace::{GitStatusCacheEntry, PaneGitStatus, WorkspaceGitStatus};
 
 #[derive(Debug)]
 pub struct ApiWorktreeAddRequest {
@@ -149,9 +149,10 @@ pub enum AppEvent {
         pane_id: PaneId,
         cwd: std::path::PathBuf,
     },
-    /// Background git status refresh completed for workspaces.
+    /// Background git status refresh completed for workspaces and panes.
     GitStatusRefreshed {
-        results: Vec<WorkspaceGitStatus>,
+        workspace_results: Vec<WorkspaceGitStatus>,
+        pane_results: Vec<PaneGitStatus>,
         cache_updates: Vec<(std::path::PathBuf, GitStatusCacheEntry)>,
     },
     /// A configured tab bar status command finished.

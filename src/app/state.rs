@@ -794,6 +794,12 @@ pub struct AppState {
     pub(crate) pane_id_aliases: std::collections::HashMap<u32, PaneId>,
     pub(crate) public_pane_id_aliases: std::collections::HashMap<String, PaneId>,
     pub workspaces: Vec<Workspace>,
+    /// Git context per pane, keyed by pane.
+    ///
+    /// Panes of one workspace can sit in different checkouts (each agent may run in
+    /// its own worktree), so branch and worktree provenance are tracked per pane
+    /// rather than reusing the workspace's own cached values.
+    pub pane_git_context: std::collections::HashMap<PaneId, crate::workspace::PaneGitContext>,
     pub active: Option<usize>,
     pub(crate) previous_pane_focus: Option<PaneFocusTarget>,
     pub selected: usize,
@@ -1025,6 +1031,7 @@ impl AppState {
             pane_id_aliases: std::collections::HashMap::new(),
             public_pane_id_aliases: std::collections::HashMap::new(),
             workspaces: Vec::new(),
+            pane_git_context: std::collections::HashMap::new(),
             active: None,
             previous_pane_focus: None,
             selected: 0,

@@ -10,6 +10,14 @@ use ratatui::{
 
 use super::*;
 
+/// Rendered by the `worktree` token for agents in a linked worktree checkout.
+///
+/// Detected from the pane's own checkout on disk, so checkouts created outside
+/// Herdr with a plain `git worktree add` are marked too. An agent in a main
+/// checkout, or outside any Git work tree, renders no marker at all rather than
+/// claiming to be in a main checkout.
+pub(super) const WORKTREE_MARKER: &str = "worktree";
+
 pub(super) struct AgentRow {
     pub(super) pane_id: String,
     pub(super) status: crate::api::schema::AgentStatus,
@@ -305,6 +313,10 @@ pub(super) fn agent_row(
             agent_label,
             terminal_title: agent.terminal_title.as_deref(),
             terminal_title_stripped: agent.terminal_title_stripped.as_deref(),
+            branch: pane.and_then(|pane| pane.branch.as_deref()),
+            worktree: pane
+                .filter(|pane| pane.is_linked_worktree)
+                .map(|_| WORKTREE_MARKER),
             canonical_agent,
             tokens: &tokens,
         },

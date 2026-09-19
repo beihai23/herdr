@@ -4,31 +4,53 @@ use std::time::Instant;
 
 use super::{App, GIT_REMOTE_STATUS_REFRESH_INTERVAL, GIT_REPO_DISCOVERY_REFRESH_INTERVAL};
 use crate::events::AppEvent;
-use crate::workspace::{GitStatusCacheEntry, GitStatusRefreshDemand, WorkspaceGitStatus};
+use crate::workspace::{
+    GitStatusCacheEntry, GitStatusRefreshDemand, PaneGitStatus, WorkspaceGitStatus,
+};
 
+/// What consumes a refreshed Git snapshot: a workspace row or one pane.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct WorkspaceGitRefreshItem {
-    workspace_id: String,
-    resolved_identity_cwd: PathBuf,
+enum GitRefreshTarget {
+    Workspace {
+        workspace_id: String,
+        resolved_identity_cwd: PathBuf,
+    },
+    Pane {
+        pane_id: crate::layout::PaneId,
+        cwd: PathBuf,
+    },
+}
+
+impl GitRefreshTarget {
+    fn cwd(&self) -> &std::path::Path {
+        match self {
+            Self::Workspace {
+                resolved_identity_cwd,
+                ..
+            } => resolved_identity_cwd,
+            Self::Pane { cwd, .. } => cwd,
+        }
+    }
+}
+
+/// One cwd that needs a refreshed Git snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GitRefreshItem {
+    target: GitRefreshTarget,
     cache_key_hint: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct WorkspaceGitRefreshTarget {
-    workspace_id: String,
-    resolved_identity_cwd: PathBuf,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct WorkspaceGitRefreshJob {
+struct GitRefreshJob {
     cache_key: PathBuf,
     cached: Option<GitStatusCacheEntry>,
-    targets: Vec<WorkspaceGitRefreshTarget>,
+    targets: Vec<GitRefreshTarget>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct WorkspaceGitRefreshOutput {
-    results: Vec<WorkspaceGitStatus>,
+struct GitRefreshOutput {
+    workspace_results: Vec<WorkspaceGitStatus>,
+    pane_results: Vec<PaneGitStatus>,
     cache_updates: Vec<(PathBuf, GitStatusCacheEntry)>,
 }
 
@@ -45,9 +67,13 @@ impl App {
         let refresh_repo_discovery = self.git_identity_refresh_requested
             || now.saturating_duration_since(self.last_git_repo_discovery_refresh)
                 >= GIT_REPO_DISCOVERY_REFRESH_INTERVAL;
-        let workspaces = self.workspace_git_refresh_items(refresh_repo_discovery);
+        let mut demand = self.git_refresh_demand();
+        if self.git_identity_refresh_requested {
+            demand.branch = true;
+        }
+        let items = self.git_refresh_items(refresh_repo_discovery, demand);
 
-        if workspaces.is_empty() {
+        if items.is_empty() {
             self.last_git_remote_status_refresh = now;
             self.git_identity_refresh_requested = false;
             return;
@@ -56,19 +82,15 @@ impl App {
         self.git_refresh_in_flight = true;
         let event_tx = self.event_tx.clone();
         let cache = self.git_status_cache.clone();
-        let mut demand = self.git_refresh_demand();
-        if self.git_identity_refresh_requested {
-            demand.branch = true;
-        }
         self.git_identity_refresh_requested = false;
         if refresh_repo_discovery {
             self.last_git_repo_discovery_refresh = now;
         }
         std::thread::spawn(move || {
-            let output =
-                refresh_workspace_git_statuses_with_cache_and_demand(workspaces, &cache, demand);
+            let output = refresh_git_statuses_with_cache_and_demand(items, &cache, demand);
             let _ = event_tx.blocking_send(AppEvent::GitStatusRefreshed {
-                results: output.results,
+                workspace_results: output.workspace_results,
+                pane_results: output.pane_results,
                 cache_updates: output.cache_updates,
             });
         });
@@ -108,72 +130,116 @@ impl App {
                 _ => {}
             }
         }
+        // Agent rows consume Git context too. Every configured layout counts,
+        // including per-agent overrides, so a `branch` token on an agent row keeps
+        // the refresh demand alive when no space row needs it. Without this, a
+        // branch configured only on agent rows would be filled once by the cwd
+        // identity refresh and then never follow a branch switch.
+        for token in std::iter::once(&self.state.sidebar_agents.rows)
+            .chain(self.state.sidebar_agents.rows_by_agent.values())
+            .flatten()
+            .flatten()
+        {
+            if matches!(token.parts().0, crate::config::AgentSidebarToken::Branch) {
+                demand.branch = true;
+            }
+        }
         demand
     }
 
-    fn workspace_git_refresh_items(
+    fn git_refresh_items(
         &self,
         refresh_repo_discovery: bool,
-    ) -> Vec<WorkspaceGitRefreshItem> {
-        self.state
-            .workspaces
-            .iter()
-            .filter_map(|ws| {
-                let cwd =
-                    ws.resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes)?;
-                let cache_key_hint = (!refresh_repo_discovery && ws.cached_identity_cwd == cwd)
-                    .then(|| ws.cached_git_status_key.clone());
-                Some(WorkspaceGitRefreshItem {
+        demand: GitStatusRefreshDemand,
+    ) -> Vec<GitRefreshItem> {
+        let mut items = Vec::new();
+        for ws in &self.state.workspaces {
+            let Some(cwd) =
+                ws.resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes)
+            else {
+                continue;
+            };
+            let cache_key_hint = (!refresh_repo_discovery && ws.cached_identity_cwd == cwd)
+                .then(|| ws.cached_git_status_key.clone());
+            items.push(GitRefreshItem {
+                target: GitRefreshTarget::Workspace {
                     workspace_id: ws.id.clone(),
                     resolved_identity_cwd: cwd,
-                    cache_key_hint,
-                })
-            })
-            .collect()
+                },
+                cache_key_hint,
+            });
+        }
+        // Pane context answers the agent `branch` and `worktree` tokens. Collect it
+        // only while something displays those, so configurations that do not use
+        // them keep the previous per-workspace cost.
+        if demand.branch {
+            items.extend(self.pane_git_refresh_items());
+        }
+        items
+    }
+
+    fn pane_git_refresh_items(&self) -> Vec<GitRefreshItem> {
+        let mut items = Vec::new();
+        for ws in &self.state.workspaces {
+            for tab in &ws.tabs {
+                for pane_id in tab.panes.keys().copied() {
+                    let Some(cwd) =
+                        ws.pane_git_cwd(pane_id, &self.state.terminals, &self.terminal_runtimes)
+                    else {
+                        continue;
+                    };
+                    items.push(GitRefreshItem {
+                        target: GitRefreshTarget::Pane { pane_id, cwd },
+                        // A pane's cwd can change without the workspace identity
+                        // changing, so never trust a cached key hint here.
+                        cache_key_hint: None,
+                    });
+                }
+            }
+        }
+        items
     }
 }
 
 fn deduplicate_git_refresh_items(
-    items: Vec<WorkspaceGitRefreshItem>,
+    items: Vec<GitRefreshItem>,
     cache: &HashMap<PathBuf, GitStatusCacheEntry>,
-) -> Vec<WorkspaceGitRefreshJob> {
+) -> Vec<GitRefreshJob> {
     let mut indexes = HashMap::<PathBuf, usize>::new();
-    let mut jobs = Vec::<WorkspaceGitRefreshJob>::new();
+    let mut jobs = Vec::<GitRefreshJob>::new();
 
     for item in items {
         let reconcile = item.cache_key_hint.is_none();
-        let cache_key = item.cache_key_hint.unwrap_or_else(|| {
-            crate::workspace::git_status_cache_key(&item.resolved_identity_cwd)
-                .unwrap_or_else(|| item.resolved_identity_cwd.clone())
-        });
-        let target = WorkspaceGitRefreshTarget {
-            workspace_id: item.workspace_id,
-            resolved_identity_cwd: item.resolved_identity_cwd,
+        let cache_key = match item.cache_key_hint {
+            Some(hint) => hint,
+            None => crate::workspace::git_status_cache_key(item.target.cwd())
+                .unwrap_or_else(|| item.target.cwd().to_path_buf()),
         };
         if let Some(&index) = indexes.get(&cache_key) {
             jobs[index].cached = jobs[index].cached.take().filter(|_| !reconcile);
-            jobs[index].targets.push(target);
+            jobs[index].targets.push(item.target);
             continue;
         }
 
         let cached = cache.get(&cache_key).filter(|_| !reconcile).cloned();
         indexes.insert(cache_key.clone(), jobs.len());
-        jobs.push(WorkspaceGitRefreshJob {
+        jobs.push(GitRefreshJob {
             cache_key,
             cached,
-            targets: vec![target],
+            targets: vec![item.target],
         });
     }
 
     jobs
 }
 
-fn refresh_workspace_git_statuses_with_cache_and_demand(
-    items: Vec<WorkspaceGitRefreshItem>,
+fn refresh_git_statuses_with_cache_and_demand(
+    items: Vec<GitRefreshItem>,
     cache: &HashMap<PathBuf, GitStatusCacheEntry>,
     demand: GitStatusRefreshDemand,
-) -> WorkspaceGitRefreshOutput {
-    let mut results = Vec::new();
+) -> GitRefreshOutput {
+    let mut workspace_results = Vec::new();
+    let mut pane_results = Vec::new();
     let mut cache_updates = Vec::new();
 
     for job in deduplicate_git_refresh_items(items, cache) {
@@ -185,18 +251,34 @@ fn refresh_workspace_git_statuses_with_cache_and_demand(
         if let Some(cache_entry) = cache_entry {
             cache_updates.push((job.cache_key.clone(), cache_entry));
         }
-        results.extend(job.targets.into_iter().map(move |target| {
-            snapshot.clone().into_workspace_status(
-                target.workspace_id,
-                target.resolved_identity_cwd,
-                job.cache_key.clone(),
-                demand,
-            )
-        }));
+        for target in job.targets {
+            match target {
+                GitRefreshTarget::Workspace {
+                    workspace_id,
+                    resolved_identity_cwd,
+                } => workspace_results.push(snapshot.clone().into_workspace_status(
+                    workspace_id,
+                    resolved_identity_cwd,
+                    job.cache_key.clone(),
+                    demand,
+                )),
+                GitRefreshTarget::Pane { pane_id, cwd } => pane_results.push(PaneGitStatus {
+                    pane_id,
+                    cwd,
+                    demand,
+                    branch: snapshot.branch.clone(),
+                    is_linked_worktree: snapshot
+                        .space
+                        .as_ref()
+                        .is_some_and(|space| space.is_linked_worktree),
+                }),
+            }
+        }
     }
 
-    WorkspaceGitRefreshOutput {
-        results,
+    GitRefreshOutput {
+        workspace_results,
+        pane_results,
         cache_updates,
     }
 }
@@ -205,6 +287,17 @@ fn refresh_workspace_git_statuses_with_cache_and_demand(
 mod tests {
     use super::*;
     use crate::workspace::Workspace;
+
+    /// The cwd a workspace-targeted refresh item was collected for.
+    fn workspace_target_cwd(item: &GitRefreshItem) -> &std::path::Path {
+        match &item.target {
+            GitRefreshTarget::Workspace {
+                resolved_identity_cwd,
+                ..
+            } => resolved_identity_cwd,
+            other => panic!("expected a workspace target, got {other:?}"),
+        }
+    }
 
     #[test]
     fn git_refresh_deduplicates_workspaces_with_same_cache_key() {
@@ -221,16 +314,20 @@ mod tests {
             .output()
             .expect("run git init");
 
-        let output = refresh_workspace_git_statuses_with_cache_and_demand(
+        let output = refresh_git_statuses_with_cache_and_demand(
             vec![
-                WorkspaceGitRefreshItem {
-                    workspace_id: "one".into(),
-                    resolved_identity_cwd: nested.clone(),
+                GitRefreshItem {
+                    target: GitRefreshTarget::Workspace {
+                        workspace_id: "one".into(),
+                        resolved_identity_cwd: nested.clone(),
+                    },
                     cache_key_hint: None,
                 },
-                WorkspaceGitRefreshItem {
-                    workspace_id: "two".into(),
-                    resolved_identity_cwd: other.clone(),
+                GitRefreshItem {
+                    target: GitRefreshTarget::Workspace {
+                        workspace_id: "two".into(),
+                        resolved_identity_cwd: other.clone(),
+                    },
                     cache_key_hint: None,
                 },
             ],
@@ -243,11 +340,11 @@ mod tests {
             output.cache_updates[0].0,
             std::fs::canonicalize(&repo).expect("canonical repo path")
         );
-        assert_eq!(output.results.len(), 2);
-        assert_eq!(output.results[0].workspace_id, "one");
-        assert_eq!(output.results[0].resolved_identity_cwd, nested);
-        assert_eq!(output.results[1].workspace_id, "two");
-        assert_eq!(output.results[1].resolved_identity_cwd, other);
+        assert_eq!(output.workspace_results.len(), 2);
+        assert_eq!(output.workspace_results[0].workspace_id, "one");
+        assert_eq!(output.workspace_results[0].resolved_identity_cwd, nested);
+        assert_eq!(output.workspace_results[1].workspace_id, "two");
+        assert_eq!(output.workspace_results[1].resolved_identity_cwd, other);
 
         let _ = std::fs::remove_dir_all(repo);
     }
@@ -273,25 +370,27 @@ mod tests {
         };
         let items = ["alpha", "beta"]
             .into_iter()
-            .map(|name| WorkspaceGitRefreshItem {
-                workspace_id: name.into(),
-                resolved_identity_cwd: cache_key.join(name),
+            .map(|name| GitRefreshItem {
+                target: GitRefreshTarget::Workspace {
+                    workspace_id: name.into(),
+                    resolved_identity_cwd: cache_key.join(name),
+                },
                 cache_key_hint: Some(cache_key.clone()),
             })
             .collect();
 
-        let output = refresh_workspace_git_statuses_with_cache_and_demand(
+        let output = refresh_git_statuses_with_cache_and_demand(
             items,
             &HashMap::from([(cache_key, cached)]),
             GitStatusRefreshDemand::ALL,
         );
 
         assert_eq!(output.cache_updates.len(), 1);
-        assert_eq!(output.results.len(), 2);
-        assert_eq!(output.results[0].auto_label, "alpha");
-        assert_eq!(output.results[1].auto_label, "beta");
-        assert_eq!(output.results[0].branch.as_deref(), Some("main"));
-        assert_eq!(output.results[1].branch.as_deref(), Some("main"));
+        assert_eq!(output.workspace_results.len(), 2);
+        assert_eq!(output.workspace_results[0].auto_label, "alpha");
+        assert_eq!(output.workspace_results[1].auto_label, "beta");
+        assert_eq!(output.workspace_results[0].branch.as_deref(), Some("main"));
+        assert_eq!(output.workspace_results[1].branch.as_deref(), Some("main"));
     }
 
     #[test]
@@ -303,10 +402,10 @@ mod tests {
         ws.tabs.clear();
         app.state.workspaces.push(ws);
 
-        let items = app.workspace_git_refresh_items(false);
+        let items = app.git_refresh_items(false, app.git_refresh_demand());
 
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].resolved_identity_cwd, cwd);
+        assert_eq!(workspace_target_cwd(&items[0]), cwd);
         assert_eq!(items[0].cache_key_hint, None);
     }
 
@@ -322,7 +421,7 @@ mod tests {
         ws.tabs.clear();
         app.state.workspaces.push(ws);
 
-        let items = app.workspace_git_refresh_items(false);
+        let items = app.git_refresh_items(false, app.git_refresh_demand());
 
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].cache_key_hint, Some(cache_key));
@@ -339,11 +438,11 @@ mod tests {
         ws.tabs.clear();
         app.state.workspaces.push(ws);
 
-        let items = app.workspace_git_refresh_items(true);
+        let items = app.git_refresh_items(true, app.git_refresh_demand());
 
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].cache_key_hint, None);
-        let cache_key = items[0].resolved_identity_cwd.clone();
+        let cache_key = workspace_target_cwd(&items[0]).to_path_buf();
         let cached = GitStatusCacheEntry {
             fingerprint: None,
             retry_after: None,
@@ -429,6 +528,66 @@ mod tests {
     }
 
     #[test]
+    fn agent_branch_token_alone_keeps_periodic_git_refresh_alive() {
+        // Space rows carry no Git token, so only the agent row can create demand.
+        let mut config = crate::config::Config::default();
+        config.ui.sidebar.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        config.ui.sidebar.agents.rows = vec![
+            vec![crate::config::AgentSidebarToken::Workspace],
+            vec![crate::config::AgentSidebarToken::Branch],
+        ];
+        let mut app = test_app(&config);
+        app.state.workspaces.push(Workspace::test_new("test"));
+
+        assert_eq!(
+            app.git_refresh_demand(),
+            GitStatusRefreshDemand {
+                branch: true,
+                ahead_behind: false,
+            }
+        );
+        assert!(app.git_refresh_deadline().is_some());
+    }
+
+    #[test]
+    fn agent_row_git_demand_ignores_rows_without_git_tokens() {
+        // `worktree` reads workspace provenance from the snapshot, not Git status,
+        // so it must not resurrect a refresh that has no consumer.
+        let mut config = crate::config::Config::default();
+        config.ui.sidebar.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        config.ui.sidebar.agents.rows = vec![
+            vec![crate::config::AgentSidebarToken::Workspace],
+            vec![crate::config::AgentSidebarToken::Worktree],
+        ];
+        let mut app = test_app(&config);
+        app.state.workspaces.push(Workspace::test_new("test"));
+
+        assert_eq!(app.git_refresh_demand(), GitStatusRefreshDemand::default());
+        assert!(app.git_refresh_deadline().is_none());
+    }
+
+    #[test]
+    fn per_agent_override_rows_contribute_git_demand() {
+        let mut config = crate::config::Config::default();
+        config.ui.sidebar.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        config.ui.sidebar.agents.rows = vec![vec![crate::config::AgentSidebarToken::Workspace]];
+        config.ui.sidebar.agents.rows_by_agent.insert(
+            "claude".into(),
+            vec![vec![crate::config::AgentSidebarToken::Branch]],
+        );
+        let mut app = test_app(&config);
+        app.state.workspaces.push(Workspace::test_new("test"));
+
+        assert_eq!(
+            app.git_refresh_demand(),
+            GitStatusRefreshDemand {
+                branch: true,
+                ahead_behind: false,
+            }
+        );
+    }
+
+    #[test]
     fn unnamed_linked_worktree_does_not_force_periodic_branch_refresh() {
         let mut config = crate::config::Config::default();
         config.ui.sidebar.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
@@ -511,7 +670,8 @@ mod tests {
         assert!(app.git_refresh_due_after_in_flight);
 
         app.handle_internal_event(AppEvent::GitStatusRefreshed {
-            results: Vec::new(),
+            workspace_results: Vec::new(),
+            pane_results: Vec::new(),
             cache_updates: Vec::new(),
         });
 
@@ -534,5 +694,113 @@ mod tests {
             tokio::sync::mpsc::unbounded_channel().1,
             crate::api::EventHub::default(),
         )
+    }
+
+    /// Point a workspace's root pane at `cwd` so `pane_git_cwd` resolves there.
+    fn app_with_pane_at(config: &crate::config::Config, cwd: &std::path::Path) -> super::super::App {
+        let cwd = cwd.to_path_buf();
+        let mut app = test_app(config);
+        let mut ws = Workspace::test_new("pane-cwd");
+        ws.identity_cwd = cwd.clone();
+        ws.cached_identity_cwd = cwd.clone();
+        let root_pane = ws.tabs[0].root_pane;
+        let terminal_id = ws.tabs[0]
+            .terminal_id(root_pane)
+            .expect("root pane terminal")
+            .clone();
+        app.state.terminals.insert(
+            terminal_id.clone(),
+            crate::terminal::TerminalState::new(terminal_id, cwd.clone()),
+        );
+        app.state.workspaces.push(ws);
+        app
+    }
+
+    #[test]
+    fn pane_refresh_reports_each_checkouts_own_branch_and_worktree() {
+        let (base, repo, linked) =
+            crate::workspace::test_support::create_repo_with_linked_worktree("pane-git-refresh");
+        let main_pane = crate::layout::PaneId::alloc();
+        let linked_pane = crate::layout::PaneId::alloc();
+        let items = vec![
+            GitRefreshItem {
+                target: GitRefreshTarget::Pane {
+                    pane_id: main_pane,
+                    cwd: repo.clone(),
+                },
+                cache_key_hint: None,
+            },
+            GitRefreshItem {
+                target: GitRefreshTarget::Pane {
+                    pane_id: linked_pane,
+                    cwd: linked.clone(),
+                },
+                cache_key_hint: None,
+            },
+        ];
+
+        let output = refresh_git_statuses_with_cache_and_demand(
+            items,
+            &HashMap::new(),
+            GitStatusRefreshDemand::ALL,
+        );
+
+        // No workspace row is produced for either pane.
+        assert!(output.workspace_results.is_empty());
+        assert_eq!(output.pane_results.len(), 2);
+        // Each worktree has its own HEAD and index, so they keep separate status
+        // caches. Deduplication instead benefits panes sharing one checkout.
+        assert_eq!(output.cache_updates.len(), 2);
+        let main = output
+            .pane_results
+            .iter()
+            .find(|result| result.pane_id == main_pane)
+            .expect("main checkout pane result");
+        let worktree = output
+            .pane_results
+            .iter()
+            .find(|result| result.pane_id == linked_pane)
+            .expect("linked checkout pane result");
+        // The two panes are in the same repository but report different branches.
+        assert_ne!(main.branch, worktree.branch, "{:?}", output.pane_results);
+        // Worktree provenance comes from the checkout on disk, not from Herdr, so a
+        // `git worktree add` checkout created outside Herdr is recognized.
+        assert!(!main.is_linked_worktree);
+        assert!(worktree.is_linked_worktree);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn pane_refresh_items_are_collected_only_when_something_displays_branch() {
+        let base =
+            std::env::temp_dir().join(format!("herdr-pane-git-demand-{}", std::process::id()));
+        let checkout = base.join("work");
+        std::fs::create_dir_all(&checkout).expect("create checkout dir");
+
+        let mut config = crate::config::Config::default();
+        config.ui.sidebar.spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        config.ui.sidebar.agents.rows = vec![vec![crate::config::AgentSidebarToken::Workspace]];
+        let mut app = app_with_pane_at(&config, &checkout);
+
+        let without_branch = app.git_refresh_items(false, app.git_refresh_demand());
+        assert!(
+            without_branch
+                .iter()
+                .all(|item| matches!(item.target, GitRefreshTarget::Workspace { .. })),
+            "panes must not be inspected when no row shows a branch"
+        );
+
+        // Adding the agent `branch` token brings pane context into the refresh.
+        app.state.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Branch]];
+        let demand = app.git_refresh_demand();
+        let with_branch = app.git_refresh_items(false, demand);
+        let pane_items = with_branch
+            .iter()
+            .filter(|item| matches!(item.target, GitRefreshTarget::Pane { .. }))
+            .count();
+        assert_eq!(pane_items, 1, "the agent branch row needs pane context");
+
+        let _ = std::fs::remove_dir_all(base);
     }
 }

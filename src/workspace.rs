@@ -20,6 +20,8 @@ mod git;
 mod tab;
 
 use self::git::git_status_cache_key_for_space;
+#[cfg(test)]
+pub(crate) use self::git::test_support;
 pub(crate) use self::{git::git_status_snapshot_for_cwd_with_demand, tab::MovedPane};
 pub use self::{
     git::{
@@ -56,6 +58,41 @@ pub struct WorkspaceGitStatusSnapshot {
     pub branch: Option<String>,
     pub ahead_behind: Option<(usize, usize)>,
     pub space: Option<GitSpaceMetadata>,
+}
+
+/// Git context for one pane, resolved from that pane's own foreground cwd.
+///
+/// The panes of a workspace can sit in different checkouts, for example when each
+/// pane runs an agent in its own worktree, so pane Git context is tracked per pane
+/// instead of per workspace. `is_linked_worktree` is detected from the checkout on
+/// disk (`.git` file pointing at another Git dir), not from Herdr-managed worktree
+/// provenance, so checkouts created with plain `git worktree add` are recognized too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneGitStatus {
+    pub pane_id: crate::layout::PaneId,
+    /// Foreground cwd this status was resolved from; a result for another cwd is stale.
+    pub cwd: PathBuf,
+    pub demand: GitStatusRefreshDemand,
+    pub branch: Option<String>,
+    pub is_linked_worktree: bool,
+}
+
+/// Pane Git context retained in `AppState` between refreshes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneGitContext {
+    pub cwd: PathBuf,
+    pub branch: Option<String>,
+    pub is_linked_worktree: bool,
+}
+
+impl PaneGitStatus {
+    pub fn into_context(self) -> PaneGitContext {
+        PaneGitContext {
+            cwd: self.cwd,
+            branch: self.branch,
+            is_linked_worktree: self.is_linked_worktree,
+        }
+    }
 }
 
 pub(crate) fn discover_workspace_git_identity(
@@ -1088,6 +1125,23 @@ impl Workspace {
         self.tabs
             .iter()
             .position(|tab| tab.panes.contains_key(&pane_id))
+    }
+
+    /// The cwd a pane's Git context is resolved from.
+    ///
+    /// Prefers the foreground process's cwd, so a pane whose agent changed directory
+    /// or runs from a worktree is described by where it actually is. Falls back to the
+    /// shell cwd, which is the only option on Windows and while a pane has no
+    /// foreground process group, so the fallback is routine rather than exceptional.
+    pub fn pane_git_cwd(
+        &self,
+        pane_id: PaneId,
+        terminals: &HashMap<TerminalId, TerminalState>,
+        terminal_runtimes: &TerminalRuntimeRegistry,
+    ) -> Option<PathBuf> {
+        let tab = self.tabs.get(self.find_tab_index_for_pane(pane_id)?)?;
+        tab.foreground_cwd_for_pane(pane_id, terminal_runtimes)
+            .or_else(|| tab.cwd_for_pane(pane_id, terminals, terminal_runtimes))
     }
 
     pub fn pane_state(&self, pane_id: PaneId) -> Option<&PaneState> {

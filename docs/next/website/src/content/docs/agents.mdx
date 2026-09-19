@@ -138,6 +138,8 @@ herdr pane report-metadata w1:p1 \
 
 Agent sidebar rows can also opt into `terminal_title` or `terminal_title_stripped`; neither appears in the default rows. The first shows the latest safety-normalized OSC 0/2 terminal title. The second removes one recognized leading activity or spinner glyph and following whitespace. Herdr owns these values on the server; they are ephemeral across a cold restart and remain independent of metadata titles and semantic agent state. Spinner animation can therefore update the raw title without producing a pane update when the stripped text stays the same.
 
+Agent rows can also opt into `branch` and `worktree`, which describe the pane's own Git checkout rather than the agent itself. Both are resolved per pane, so agents in one workspace that run in separate worktrees report their own branches. See the Agent row token list under [Configuration](/docs/configuration/) for what each one renders and when it is omitted.
+
 ## Attach directly to an agent
 
 Attach your current terminal to one agent terminal instead of the full Herdr UI:
