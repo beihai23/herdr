@@ -115,6 +115,10 @@ fn start_server_inner(
                         }
                     });
                 }
+                Err(err) if is_transient_accept_error(&err) => {
+                    warn!(err = %err, "api listener accept interrupted; retrying");
+                    continue;
+                }
                 Err(err) => {
                     error!(err = %err, "api listener accept failed");
                     break;
@@ -130,6 +134,25 @@ fn start_server_inner(
         identity,
         running,
     })
+}
+
+/// Transient accept failures must not kill the API listener thread: a single
+/// spurious ECONNABORTED/EINTR leaves the socket file in place with nobody
+/// listening, permanently disconnecting every CLI from a running server.
+#[cfg(unix)]
+fn is_transient_accept_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted
+    ) || err.raw_os_error().is_some_and(|code| code == libc::EAGAIN)
+}
+
+#[cfg(windows)]
+fn is_transient_accept_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::Interrupted | std::io::ErrorKind::ConnectionAborted
+    )
 }
 
 fn prepare_socket_path(path: &Path) -> std::io::Result<()> {
