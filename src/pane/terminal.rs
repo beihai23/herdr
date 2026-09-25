@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
@@ -33,8 +32,7 @@ use super::{
     },
     kitty_keyboard::KittyKeyboardTracker,
     osc::{
-        contains_scrollback_clear_sequence, current_transient_default_color_owner,
-        maybe_filter_primary_screen_scrollback_clear, parse_reported_cwd,
+        current_transient_default_color_owner, parse_reported_cwd,
         restore_host_terminal_theme_if_needed, write_host_terminal_theme_selective,
         AgentOscStateTracker, DefaultColorEvent, DefaultColorEventTracker, DefaultColorOscTracker,
         DefaultColorQuery, DefaultColorTrackedEvent, OscDebugTracker,
@@ -197,6 +195,7 @@ pub(crate) struct GhosttyPaneCore {
     #[cfg(test)]
     pub dirty_collection_hook: Option<Box<dyn FnOnce() + Send>>,
     pub terminal: crate::ghostty::Terminal,
+    synchronized_output_epoch: u64,
     #[cfg(windows)]
     recent_fallback: windows_recent_fallback::Cache,
     pub render_state: crate::ghostty::RenderState,
@@ -482,6 +481,10 @@ impl PaneTerminal {
 
     pub fn synchronized_output_active(&self) -> bool {
         self.ghostty.synchronized_output_active()
+    }
+
+    pub(crate) fn synchronized_output_state(&self) -> (bool, u64) {
+        self.ghostty.synchronized_output_state()
     }
 
     pub fn visible_text(&self) -> String {
@@ -1169,6 +1172,7 @@ impl GhosttyPaneTerminal {
                 #[cfg(test)]
                 dirty_collection_hook: None,
                 terminal,
+                synchronized_output_epoch: 0,
                 #[cfg(windows)]
                 recent_fallback: windows_recent_fallback::Cache::default(),
                 render_state,
@@ -1381,43 +1385,22 @@ impl GhosttyPaneTerminal {
         }
         let terminal_title_changed = core.agent_osc_state.observe(bytes);
 
-        let alternate_screen = core
-            .terminal
-            .active_screen()
-            .map(|screen| screen == crate::ghostty::ActiveScreen::Alternate)
-            .unwrap_or(false);
-        let filtered_bytes = if shell_pid > 0 {
-            let foreground_job = (!alternate_screen && contains_scrollback_clear_sequence(bytes))
-                .then(|| crate::detect::foreground_job(shell_pid))
-                .flatten();
-            maybe_filter_primary_screen_scrollback_clear(
-                bytes,
-                alternate_screen,
-                foreground_job.as_ref(),
-            )
-        } else {
-            Cow::Borrowed(bytes)
-        };
-        if filtered_bytes.len() != bytes.len() {
-            debug!(
-                pane = pane_id.raw(),
-                shell_pid, "ignored scrollback clear sequence for droid compatibility"
-            );
-        }
-
-        core.kitty_keyboard.observe(filtered_bytes.as_ref());
+        core.kitty_keyboard.observe(bytes);
         let mut terminal_responses = Vec::new();
-        core.default_color_event_tracker
-            .observe(filtered_bytes.as_ref());
-        core.c1_xtgettcap_tracker.observe(filtered_bytes.as_ref());
+        core.default_color_event_tracker.observe(bytes);
+        core.c1_xtgettcap_tracker.observe(bytes);
         let c1_xtgettcap_responses = core.c1_xtgettcap_tracker.drain_pending();
-        core.decscusr_tracker.observe(filtered_bytes.as_ref());
+        core.decscusr_tracker.observe(bytes);
         let in_progress_default_color_event = core.default_color_event_tracker.in_progress_event();
         let default_color_events = core.default_color_event_tracker.drain_pending();
+        let synchronized_output_before = core
+            .terminal
+            .mode_get(crate::ghostty::MODE_SYNCHRONIZED_OUTPUT)
+            .unwrap_or(false);
         let write_started = crate::render_prof::timer();
         self.write_pty_bytes_with_ordered_responses(
             &mut core,
-            filtered_bytes.as_ref(),
+            bytes,
             default_color_events,
             in_progress_default_color_event,
             c1_xtgettcap_responses,
@@ -1435,8 +1418,8 @@ impl GhosttyPaneTerminal {
         windows_recent_fallback::update_after_write(&mut core);
         crate::render_prof::duration_since("pty.ghostty_write", write_started);
 
-        let has_kitty_graphics_sequence = crate::kitty_graphics::is_enabled()
-            && contains_kitty_graphics_sequence(filtered_bytes.as_ref());
+        let has_kitty_graphics_sequence =
+            crate::kitty_graphics::is_enabled() && contains_kitty_graphics_sequence(bytes);
         if has_kitty_graphics_sequence {
             debug!(pane = pane_id.raw(), "processed kitty graphics sequence");
         }
@@ -1447,6 +1430,9 @@ impl GhosttyPaneTerminal {
             .terminal
             .mode_get(crate::ghostty::MODE_SYNCHRONIZED_OUTPUT)
             .unwrap_or(false);
+        if synchronized_output != synchronized_output_before {
+            core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
+        }
         // Intermediate synchronized-frame positions must not become settled cursors.
         if CURSOR_POSITION_SETTLE_ENABLED && !synchronized_output {
             let cursor_started = crate::render_prof::timer();
@@ -1687,6 +1673,10 @@ impl GhosttyPaneTerminal {
         cell_height_px: u32,
     ) -> Vec<Bytes> {
         if let Ok(mut core) = self.core.lock() {
+            let synchronized_output_before = core
+                .terminal
+                .mode_get(crate::ghostty::MODE_SYNCHRONIZED_OUTPUT)
+                .unwrap_or(false);
             #[cfg(windows)]
             windows_recent_fallback::refresh_if_needed(&mut core);
             let offset_from_bottom = core
@@ -1725,6 +1715,13 @@ impl GhosttyPaneTerminal {
             let _ = core
                 .terminal
                 .resize(cols, rows, cell_width_px, cell_height_px);
+            let synchronized_output_after = core
+                .terminal
+                .mode_get(crate::ghostty::MODE_SYNCHRONIZED_OUTPUT)
+                .unwrap_or(false);
+            if synchronized_output_after != synchronized_output_before {
+                core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
+            }
             let terminal_responses = self.drain_pending_pty_responses();
 
             let bottom_is_blank = ghostty_detection_text(&mut core)
@@ -1996,6 +1993,20 @@ impl GhosttyPaneTerminal {
                     .ok()
             })
             .unwrap_or(false)
+    }
+
+    pub(crate) fn synchronized_output_state(&self) -> (bool, u64) {
+        self.core
+            .lock()
+            .map(|core| {
+                (
+                    core.terminal
+                        .mode_get(crate::ghostty::MODE_SYNCHRONIZED_OUTPUT)
+                        .unwrap_or(false),
+                    core.synchronized_output_epoch,
+                )
+            })
+            .unwrap_or((true, 0))
     }
 
     pub fn encode_terminal_key(
@@ -2335,6 +2346,13 @@ impl GhosttyPaneTerminal {
         let Ok(mut core) = self.core.lock() else {
             return;
         };
+        if core
+            .terminal
+            .mode_get(crate::ghostty::MODE_SYNCHRONIZED_OUTPUT)
+            .unwrap_or(false)
+        {
+            return;
+        }
         let host_theme = core.host_terminal_theme;
         let initial_default_foreground = core.initial_default_foreground;
         let initial_default_background = core.initial_default_background;
@@ -2452,6 +2470,13 @@ impl GhosttyPaneTerminal {
             .lock()
             .ok()
             .map(|mut core| {
+                if core
+                    .terminal
+                    .mode_get(crate::ghostty::MODE_SYNCHRONIZED_OUTPUT)
+                    .unwrap_or(false)
+                {
+                    return TerminalDirtyPatchOutcome::Fallback;
+                }
                 #[cfg(test)]
                 if let Some(hook) = core.dirty_collection_hook.take() {
                     hook();
@@ -2921,12 +2946,12 @@ fn ghostty_recent_text_for_terminal(
     terminal: &crate::ghostty::Terminal,
     lines: usize,
 ) -> Result<String, crate::ghostty::Error> {
-    let Some((start, end, cols)) = ghostty_recent_read_range(terminal, lines)? else {
+    let Some((start, end, _)) = ghostty_recent_read_range(terminal, lines)? else {
         return Ok(String::new());
     };
     let mut rows = Vec::with_capacity(end.saturating_sub(start).saturating_add(1));
     for y in start..=end {
-        rows.push(ghostty_screen_row(terminal, cols, y as u32)?);
+        rows.push(ghostty_screen_row(terminal, y as u32)?);
     }
     trim_trailing_blank_rows(&mut rows);
     Ok(recent_text_from_rows(&rows, lines))
@@ -2988,10 +3013,7 @@ fn ghostty_recent_read_range(
         .min(total_rows.saturating_sub(1));
     let mut last_content_row = None;
     for row in (viewport_start..total_rows).rev() {
-        if !ghostty_screen_row(terminal, cols, row as u32)?
-            .trim()
-            .is_empty()
-        {
+        if !ghostty_screen_row(terminal, row as u32)?.trim().is_empty() {
             last_content_row = Some(row);
             break;
         }
@@ -3031,12 +3053,15 @@ fn ghostty_extract_selection(
 
 fn ghostty_screen_row(
     terminal: &crate::ghostty::Terminal,
-    cols: u16,
     y: u32,
 ) -> Result<String, crate::ghostty::Error> {
     let mut line = String::new();
-    for x in 0..cols {
-        let (wide, graphemes) = terminal.screen_cell(x, y)?;
+    // Resolve the scrollback page once per row rather than once per column.
+    for crate::ghostty::ScreenTextCell { wide, graphemes } in terminal
+        .screen_text_rows_range(y as usize, y as usize + 1)?
+        .into_iter()
+        .flat_map(|row| row.cells)
+    {
         if wide == crate::ghostty::CellWide::SpacerTail {
             continue;
         }
@@ -4386,6 +4411,36 @@ mod tests {
             core.cursor_settle_state
                 .reported_cursor(current, Instant::now() + result.render_delay.unwrap()),
             current
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn cursor_state_holds_brief_pty_hide_and_schedules_sustained_hide() {
+        let (tx, _rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(80, 24, 0).unwrap();
+        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+        let pane_id = PaneId::from_raw(1);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b[15;4H", &tx);
+        {
+            let mut core = pane.core.lock().unwrap();
+            let current = current_cursor_state(&mut core);
+            core.cursor_settle_state = CursorPositionSettleState::default();
+            core.cursor_settle_state.observe(current, Instant::now());
+        }
+
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[?25l", &tx);
+        assert!(result.request_render);
+        assert_eq!(result.render_delay, Some(Duration::from_millis(100)));
+        assert!(pane.cursor_state().is_some_and(|cursor| cursor.visible));
+        let mut core = pane.core.lock().unwrap();
+        let current = current_cursor_state(&mut core);
+        assert!(
+            !core
+                .cursor_settle_state
+                .reported_cursor(current, Instant::now() + result.render_delay.unwrap())
+                .unwrap()
+                .visible
         );
     }
 
@@ -5753,6 +5808,20 @@ mod tests {
     }
 
     #[test]
+    fn recent_rows_preserve_combining_text_and_hide_image_placeholders() {
+        let (tx, _rx) = mpsc::channel(4);
+        let mut terminal = crate::ghostty::Terminal::new(40, 3, 1024 * 1024).unwrap();
+        terminal.write("old\r\n".repeat(100).as_bytes());
+        terminal.write("界 e\u{301} \u{10eeee} tail  ".as_bytes());
+        let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
+        assert_eq!(pane.recent_text(1), "界 e\u{301}   tail\n");
+        let detection = pane.detection_text();
+        assert_eq!(detection, "old\nold\n界 e\u{301}   tail\n");
+        pane.set_scroll_offset_from_bottom(100);
+        assert_eq!(pane.detection_text(), detection);
+    }
+
+    #[test]
     fn visible_ansi_preserves_cell_style_sequences() {
         let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(20, 3, 100).unwrap();
@@ -5974,14 +6043,21 @@ mod tests {
         let pane_terminal = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
         let pane_id = PaneId::from_raw(1);
 
+        assert_eq!(pane_terminal.synchronized_output_state(), (false, 0));
+        pane_terminal.process_pty_bytes(pane_id, 0, b"ordinary output", &tx);
+        assert_eq!(pane_terminal.synchronized_output_state(), (false, 0));
+
         let begin = pane_terminal.process_pty_bytes(pane_id, 0, b"\x1b[?2026h", &tx);
         assert!(!begin.request_render);
+        assert_eq!(pane_terminal.synchronized_output_state(), (true, 1));
 
         let body = pane_terminal.process_pty_bytes(pane_id, 0, b"hello", &tx);
         assert!(!body.request_render);
+        assert_eq!(pane_terminal.synchronized_output_state(), (true, 1));
 
         let end = pane_terminal.process_pty_bytes(pane_id, 0, b"\x1b[?2026l", &tx);
         assert!(end.request_render);
+        assert_eq!(pane_terminal.synchronized_output_state(), (false, 2));
     }
 
     #[test]

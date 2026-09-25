@@ -1081,6 +1081,42 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
 }
 
 #[test]
+fn navigator_search_matches_non_adjacent_words_without_losing_the_pane_target() {
+    let mut projected = snapshot();
+    projected.panes[0].label = Some("alpha beta gamma".into());
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.open_navigator_overlay();
+    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
+        panic!("navigator");
+    };
+    for (query, matches) in [
+        ("alpha gamma", true),
+        ("  ALP\tGAM  ", true),
+        ("gamma alpha", true),
+        ("beta gamma", true),
+        ("alpha missing", false),
+        ("alphagamma", false),
+    ] {
+        navigator.query = query.into();
+        navigator.selected = None;
+        let rows =
+            render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+        let target =
+            super::super::aggregate_navigation::selected_navigator_target(&rows, navigator);
+        assert_eq!(
+            target,
+            matches.then(|| ClientNavigatorTarget::Pane {
+                endpoint_id: state.active_endpoint_id.clone(),
+                pane_id: "pane_1".into(),
+            }),
+            "query={query:?}"
+        );
+    }
+}
+
+#[test]
 fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actionable() {
     let mut projected = snapshot();
     projected.tabs[0].label = "review".into();
@@ -1527,39 +1563,148 @@ fn navigator_narrow_layout_and_long_search_stay_inside_the_popup() {
         navigator.query = "界".repeat(100).as_str().into();
         let frame = state.compose(width, height).expect("navigator frame");
         let popup = state.hits.navigator_popup;
-        let cursor = frame.cursor.expect("search cursor");
+        let cursor = frame.cursor.as_ref().expect("search cursor");
         assert!(super::super::contains(popup, (cursor.x, cursor.y)));
         assert!(state.hits.navigator_rows.is_empty());
         assert!(popup.right() <= width && popup.bottom() <= height);
     }
 }
 
+fn navigator_scale_snapshot(workspaces: usize, tabs: usize, panes: usize) -> ClientShellSnapshot {
+    let mut result = snapshot();
+    let workspace_template = result.workspaces[0].clone();
+    let tab_template = result.tabs[0].clone();
+    let pane_template = result.panes[0].clone();
+    result.workspaces.clear();
+    result.tabs.clear();
+    result.panes.clear();
+    for w in 0..workspaces {
+        let mut workspace = workspace_template.clone();
+        workspace.workspace_id = format!("workspace_{w}");
+        workspace.active_tab_id = format!("tab_{w}_0");
+        workspace.number = w + 1;
+        workspace.label = format!("workspace {w}");
+        workspace.focused = w == 0;
+        for t in 0..tabs {
+            let mut tab = tab_template.clone();
+            tab.workspace_id = workspace.workspace_id.clone();
+            tab.tab_id = format!("tab_{w}_{t}");
+            tab.number = t + 1;
+            tab.label = format!("tab {t}");
+            tab.focused = w == 0 && t == 0;
+            for p in 0..panes {
+                let mut pane = pane_template.clone();
+                pane.workspace_id = workspace.workspace_id.clone();
+                pane.tab_id = tab.tab_id.clone();
+                pane.pane_id = format!("pane_{w}_{t}_{p}");
+                pane.label = Some(format!("terminal {p}"));
+                pane.focused = w == 0 && t == 0 && p == 0;
+                result.panes.push(pane);
+            }
+            result.tabs.push(tab);
+        }
+        result.workspaces.push(workspace);
+    }
+    result.focused_workspace_id = Some(result.workspaces[0].workspace_id.clone());
+    result.focused_tab_id = Some(result.tabs[0].tab_id.clone());
+    result.focused_pane_id = Some(result.panes[0].pane_id.clone());
+    result
+}
+
+#[test]
+fn navigator_grouping_keeps_snapshot_order_with_interleaved_tabs_and_panes() {
+    let mut snapshot = navigator_scale_snapshot(2, 2, 2);
+    snapshot.tabs.swap(1, 2);
+    snapshot.panes.reverse();
+    let expected = snapshot
+        .workspaces
+        .iter()
+        .flat_map(|workspace| {
+            snapshot
+                .tabs
+                .iter()
+                .filter(|tab| tab.workspace_id == workspace.workspace_id)
+                .flat_map(|tab| {
+                    snapshot
+                        .panes
+                        .iter()
+                        .filter(|pane| pane.tab_id == tab.tab_id)
+                        .map(|pane| pane.pane_id.clone())
+                })
+        })
+        .collect::<Vec<_>>();
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let remote = SavedSshEndpoint::new("Remote", "dev@example.invalid", "test").unwrap();
+    let remote_id = ClientEndpointId::Ssh(remote.id.clone());
+    state.set_endpoint_catalog(&[remote]);
+    state.set_endpoint_status(&remote_id, ClientEndpointStatus::Online);
+    state.set_endpoint_snapshot(&remote_id, Box::new(snapshot.clone()));
+    state.set_snapshot(Box::new(snapshot));
+    state.open_navigator_overlay();
+    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_ref() else {
+        panic!("navigator")
+    };
+    let rows =
+        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+    let actual = rows
+        .iter()
+        .filter_map(|row| match &row.target {
+            ClientNavigatorTarget::Pane {
+                endpoint_id,
+                pane_id,
+            } => {
+                assert!(endpoint_id == &state.active_endpoint_id || endpoint_id == &remote_id);
+                Some((endpoint_id.clone(), pane_id.clone()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let expected = [state.active_endpoint_id.clone(), remote_id]
+        .into_iter()
+        .flat_map(|endpoint| {
+            expected
+                .iter()
+                .map(move |pane| (endpoint.clone(), pane.clone()))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
 #[test]
 #[ignore = "manual navigator composition scaling profile"]
 fn navigator_render_scale_profile() {
-    for panes in [1, 15, 52] {
-        let mut snapshot = snapshot();
-        for index in 1..panes {
-            let mut pane = snapshot.panes[0].clone();
-            pane.pane_id = format!("pane_{index}_extra");
-            pane.focused = false;
-            snapshot.panes.push(pane);
+    for (workspaces, tabs, panes) in [
+        (1, 1, 1),
+        (1, 1, 15),
+        (1, 1, 52),
+        (1, 1, 512),
+        (1, 128, 4),
+        (64, 2, 4),
+        (128, 4, 1),
+    ] {
+        for query in ["", "terminal 0"] {
+            let mut state =
+                ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+            state.set_snapshot(Box::new(navigator_scale_snapshot(workspaces, tabs, panes)));
+            let mut pane_surface = surface();
+            pane_surface.panes[0].pane_id = "pane_0_0_0".into();
+            state.set_pane_surface(pane_surface);
+            state.open_navigator_overlay();
+            if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
+                navigator.query = query.into();
+            }
+            for _ in 0..20 {
+                std::hint::black_box(state.compose(106, 30).expect("navigator frame"));
+            }
+            let start = std::time::Instant::now();
+            for _ in 0..1000 {
+                std::hint::black_box(state.compose(106, 30).expect("navigator frame"));
+            }
+            eprintln!(
+                "navigator: {workspaces}x{tabs}x{panes}, query={query:?}, {:.1} us/frame",
+                start.elapsed().as_secs_f64() * 1000.0
+            );
         }
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-        state.set_snapshot(Box::new(snapshot));
-        state.set_pane_surface(surface());
-        state.open_navigator_overlay();
-        for _ in 0..20 {
-            std::hint::black_box(state.compose(106, 30).expect("navigator frame"));
-        }
-        let start = std::time::Instant::now();
-        for _ in 0..1000 {
-            std::hint::black_box(state.compose(106, 30).expect("navigator frame"));
-        }
-        eprintln!(
-            "navigator: {panes} panes, {:.1} us/frame",
-            start.elapsed().as_secs_f64() * 1000.0
-        );
     }
 }
 
@@ -2073,4 +2218,96 @@ fn word_selection_result_survives_focus_snapshot_lag() {
         .selection
         .as_ref()
         .is_some_and(crate::selection::Selection::is_visible));
+}
+
+#[test]
+fn copy_mode_repeat_during_projection_gap_stays_active() {
+    for selection_before_gap in [None, Some(true), Some(false)] {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_snapshot(Box::new(snapshot()));
+        let mut pane_surface = surface();
+        pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+            offset_from_bottom: 0,
+            max_offset_from_bottom: 20,
+            viewport_rows: 2,
+        });
+        state.set_pane_surface(pane_surface);
+        state.compose(106, 20).expect("composed frame");
+        let mut enter = ClientShellInput::default();
+        state.record_binding(
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+            &mut enter,
+        );
+        if selection_before_gap == Some(true) {
+            state.handle_input_bytes(b"V");
+        }
+        state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+            KeyCode::Char('k'),
+            KeyModifiers::empty(),
+        ))]);
+
+        let end_col = state.copy_mode.as_ref().expect("copy mode").geometry.0 - 1;
+        let mut next = snapshot();
+        next.revision += 1;
+        state.set_snapshot(Box::new(next));
+        assert!(state.hits.panes.is_empty());
+        assert_eq!(state.mode, ClientShellMode::Copy);
+        if selection_before_gap == Some(false) {
+            state.handle_input_bytes(b"V");
+            assert_eq!(
+                state
+                    .selection
+                    .as_ref()
+                    .expect("linewise selection")
+                    .ordered_cells(),
+                ((20, 0), (20, end_col))
+            );
+        }
+
+        let kind = if selection_before_gap == Some(false) {
+            crossterm::event::KeyEventKind::Press
+        } else {
+            crossterm::event::KeyEventKind::Repeat
+        };
+        let moved = state.handle_raw_events(vec![RawInputEvent::Key(
+            crate::input::TerminalKey::new(KeyCode::Char('k'), KeyModifiers::empty())
+                .with_kind(kind),
+        )]);
+        assert!(moved.actions.iter().any(|action| matches!(
+            action,
+            ClientShellAction::Endpoint { request, .. }
+                if matches!(&request.method, crate::api::schema::Method::PaneScroll(params)
+                    if params.pane_id == "pane_1" && params.offset_from_bottom == 1)
+        )));
+        if selection_before_gap.is_some() {
+            assert_eq!(
+                state
+                    .selection
+                    .as_ref()
+                    .expect("linewise selection")
+                    .ordered_cells(),
+                (
+                    (19, 0),
+                    (
+                        if selection_before_gap == Some(true) {
+                            21
+                        } else {
+                            20
+                        },
+                        end_col
+                    )
+                )
+            );
+        }
+
+        assert_eq!(state.mode, ClientShellMode::Copy);
+        assert!(state.copy_mode.is_some());
+        assert_eq!(
+            state
+                .copy_mode
+                .as_ref()
+                .map(|copy_mode| copy_mode.cursor.row),
+            Some(19)
+        );
+    }
 }

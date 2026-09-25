@@ -3,6 +3,9 @@
 //! Centralizes OS-dependent behavior behind a clean boundary so core
 //! modules don't scatter `#[cfg]` branches through product logic.
 
+#[cfg(unix)]
+pub(crate) mod ssh_agent;
+
 pub(crate) struct HostShutdownMonitor {
     task: Option<tokio::task::JoinHandle<()>>,
 }
@@ -78,7 +81,9 @@ impl ChildExitReason {
 }
 
 #[cfg(unix)]
-pub(crate) use unix_common::{classify_child_exit, poll_fd_readable, read_fd};
+pub(crate) use unix_common::{
+    classify_child_exit, poll_fd_readable, read_fd, shared_ssh_control_path,
+};
 
 #[cfg(not(any(unix, windows)))]
 pub(crate) fn classify_child_exit(_status: &portable_pty::ExitStatus) -> ChildExitReason {
@@ -322,6 +327,8 @@ mod remote_bridge;
 mod remote_bridge_tests;
 #[cfg(unix)]
 mod unix_common;
+#[cfg(unix)]
+pub(crate) mod unix_image_files;
 #[cfg(unix)]
 pub(crate) use unix_common::{
     begin_cli_output, end_cli_output, forward_remote_bridge_stdio, RemoteBridgeWake,
@@ -708,4 +715,28 @@ mod tests {
             LimitedRead::Complete(b"image".to_vec())
         );
     }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn shared_ssh_control_path(
+    _namespace: &std::path::Path,
+    _target: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "interactive SSH recovery requires Unix OpenSSH multiplexing",
+    ))
+}
+
+/// Kernel CoW snapshots are deliberately unsupported outside Linux.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn clone_native_image_source(
+    _source_fd: i64,
+    _destination: &std::fs::File,
+    _expected_len: usize,
+) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "native source cloning requires Linux",
+    ))
 }
