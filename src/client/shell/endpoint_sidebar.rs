@@ -128,7 +128,13 @@ pub(super) fn render_collapsed(
             if selected {
                 buffer.set_style(rect, Style::default().bg(selection_background));
             } else if focused {
-                buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+                buffer.set_style(
+                    rect,
+                    Style::default().bg(super::sidebar::workspace_active_background(
+                        palette,
+                        state.selected_workspace_id.is_some(),
+                    )),
+                );
             }
             let stale = endpoint.status != ClientEndpointStatus::Online;
             let number = format!(" {}", workspace.number);
@@ -328,7 +334,9 @@ pub(super) fn render_expanded(
             _ => 0,
         })
         .collect::<Vec<_>>();
-    if std::mem::take(state.reveal_navigation_workspace) {
+    let reveal_navigation = !body.is_empty() && std::mem::take(state.reveal_navigation_workspace);
+    let reveal_focus = !body.is_empty() && std::mem::take(state.reveal_focused_workspace);
+    if reveal_navigation || reveal_focus {
         let selected_row = rows.iter().position(|row| match row {
             Row::Workspace { endpoint, entry } => {
                 let endpoint = &state.endpoints[*endpoint];
@@ -337,9 +345,17 @@ pub(super) fn render_expanded(
                     .as_deref()
                     .and_then(|snapshot| snapshot.workspaces.get(entry.index))
                     .is_some_and(|workspace| {
-                        state.selected_workspace_id.is_some_and(|target| {
-                            target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
-                        })
+                        if reveal_navigation {
+                            state.selected_workspace_id.is_some_and(|target| {
+                                target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
+                            })
+                        } else {
+                            &endpoint.endpoint_id == state.active_endpoint_id
+                                && active_snapshot.is_some_and(|snapshot| {
+                                    snapshot.focused_workspace_id.as_deref()
+                                        == Some(workspace.workspace_id.as_str())
+                                })
+                        }
                     })
             }
             Row::Endpoint(_) => false,
@@ -439,19 +455,16 @@ pub(super) fn render_expanded(
                 super::sidebar::render_workspace_rows(
                     buffer,
                     nested,
-                    workspace,
                     status,
                     config.status_indicators,
                     entry,
                     tokens,
-                    endpoint_active,
+                    endpoint_active && workspace.focused,
                     selected,
+                    state.selected_workspace_id.is_some(),
                     false,
                     palette,
                 );
-                if selected && palette.selection_bg == ratatui::style::Color::Reset {
-                    buffer.set_style(nested, Style::default().bg(palette.active_row_bg));
-                }
                 if endpoint.status != ClientEndpointStatus::Online {
                     buffer.set_style(
                         rect,

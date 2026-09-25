@@ -827,6 +827,13 @@
                 "null"
               ]
             },
+            "restore_error": {
+              "description": "Error recorded when this pane could not be restored from persisted session state.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "revision": {
               "format": "uint64",
               "minimum": 0,
@@ -5729,6 +5736,22 @@
         {
           "properties": {
             "method": {
+              "const": "pane.clear",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneTarget"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "pane.edit_scrollback",
               "type": "string"
             },
@@ -8022,6 +8045,13 @@
             },
             "repo_name": {
               "description": "Repository the pane's checkout belongs to. Linked worktrees share this with\ntheir main checkout while having their own branch.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "restore_error": {
+              "description": "Error recorded when this pane could not be restored from persisted session state.",
               "type": [
                 "string",
                 "null"

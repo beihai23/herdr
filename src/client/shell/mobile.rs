@@ -768,7 +768,13 @@ fn mobile_items(
                     palette.surface0
                 }
             } else if endpoint.endpoint_id == active_endpoint_id && workspace.focused {
-                palette.surface_dim
+                if selected_workspace_id.is_some()
+                    && palette.surface0 == ratatui::style::Color::Reset
+                {
+                    palette.panel_bg
+                } else {
+                    palette.surface_dim
+                }
             } else {
                 palette.panel_bg
             };
@@ -957,6 +963,7 @@ impl ClientShellState {
             {
                 self.mobile_switcher_scroll = 0;
                 self.reveal_mobile_workspace = false;
+                self.pending_workspace_highlight = None;
                 self.mode = ClientShellMode::Navigate;
                 self.navigate_workspace_id = self.focused_navigation_target();
                 outcome.repaint = true;
@@ -1000,16 +1007,12 @@ impl ClientShellState {
                 if endpoint_id == self.active_endpoint_id {
                     self.mode = ClientShellMode::Terminal;
                     self.navigate_workspace_id = None;
-                } else if self.endpoint_is_online(&endpoint_id) {
+                    if endpoint_id.is_local() {
+                        self.activate_endpoint(endpoint_id, outcome);
+                    }
+                } else if self.activate_endpoint(endpoint_id, outcome) {
                     self.mode = ClientShellMode::Terminal;
                     self.navigate_workspace_id = None;
-                    outcome.actions.push(ClientShellAction::ActivateEndpoint {
-                        endpoint_id,
-                        target: None,
-                    });
-                } else {
-                    let label = self.endpoint_label(&endpoint_id).to_owned();
-                    self.receive_endpoint_unavailable(format!("{label} is not ready"));
                 }
             }
             Some(ClientMobileTarget::NewWorkspace) => {

@@ -544,6 +544,9 @@ pub struct PaneInfo {
     /// Whether the pane's checkout is a linked Git worktree rather than a main checkout.
     #[serde(default)]
     pub is_linked_worktree: bool,
+    /// Error recorded when this pane could not be restored from persisted session state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

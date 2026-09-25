@@ -2,6 +2,10 @@ use super::*;
 
 #[path = "pane_graphics.rs"]
 mod pane_graphics_tests;
+#[path = "pane_move.rs"]
+mod pane_move_tests;
+#[path = "surface_delta.rs"]
+mod surface_delta_tests;
 #[path = "surface_interest.rs"]
 mod surface_interest_tests;
 
@@ -92,6 +96,7 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         headless_size,
         effective_size: headless_size,
         shutting_down: false,
+        host_shutdown_requested: Arc::new(AtomicBool::new(false)),
         handoff_in_progress: false,
         #[cfg(unix)]
         pending_handoff_repaint_nudge: false,
@@ -688,6 +693,7 @@ async fn client_shell_attach_seeds_workspace() {
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
             surface_reuse: false,
+            surface_delta: false,
             client_id: 6,
             surface_cols: 80,
             surface_rows: 23,
@@ -719,6 +725,7 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
             surface_reuse: false,
+            surface_delta: false,
             client_id,
             surface_cols: 80,
             surface_rows: 23,
@@ -836,6 +843,7 @@ async fn client_shell_pairs_agent_view_set_replacement_and_clear_with_snapshots(
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
             surface_reuse: false,
+            surface_delta: false,
             client_id: 77,
             surface_cols: 80,
             surface_rows: 23,
@@ -945,6 +953,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
             surface_reuse: false,
+            surface_delta: false,
             client_id: 7,
             surface_cols: 80,
             surface_rows: 23,
@@ -1113,6 +1122,7 @@ fn connect_test_shell(
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
             surface_reuse: false,
+            surface_delta: false,
             client_id,
             surface_cols,
             surface_rows,
@@ -1575,6 +1585,7 @@ async fn client_shell_config_diagnostics_follow_keybinding_ownership() {
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
             surface_reuse: false,
+            surface_delta: false,
             client_id: 13,
             surface_cols: 80,
             surface_rows: 23,
@@ -1600,6 +1611,7 @@ async fn client_shell_config_diagnostics_follow_keybinding_ownership() {
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
             surface_reuse: false,
+            surface_delta: false,
             client_id: 14,
             surface_cols: 80,
             surface_rows: 23,
@@ -2503,6 +2515,7 @@ async fn public_api_focus_replaces_every_client_shell_projection() {
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
             surface_reuse: false,
+            surface_delta: false,
             client_id: 9,
             surface_cols: 80,
             surface_rows: 23,
@@ -2754,6 +2767,7 @@ async fn client_shell_streams_and_targets_popup_terminal_content() {
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
             surface_reuse: false,
+            surface_delta: false,
             client_id: 12,
             surface_cols: 80,
             surface_rows: 23,
@@ -4172,6 +4186,37 @@ fn changed_git_refresh_requests_headless_render() {
     });
 
     assert!(changed);
+}
+
+#[tokio::test]
+async fn host_shutdown_preserves_panes_from_queued_and_selected_death_events() {
+    let mut server = test_headless_server();
+    let workspace = crate::workspace::Workspace::test_new("host-shutdown");
+    let pane_id = workspace.tabs[0].root_pane;
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    let event = || AppEvent::PaneDied {
+        pane_id,
+        exit_reason: crate::platform::ChildExitReason::Exited,
+    };
+    server.app.event_tx.try_send(event()).unwrap();
+    server
+        .host_shutdown_requested
+        .store(true, Ordering::Release);
+    assert_eq!(
+        server.drain_internal_events_with_forwarding_up_to(16),
+        (false, false)
+    );
+    assert!(!server.handle_internal_event_with_forwarding(event()));
+    assert!(server.app.find_pane(pane_id).is_some());
+    assert!(server.app.event_rx.try_recv().is_ok());
+    server
+        .host_shutdown_requested
+        .store(false, Ordering::Release);
+    assert!(server.handle_internal_event_with_forwarding(event()));
+    assert!(server.app.find_pane(pane_id).is_none());
+    shutdown_test_runtimes(&mut server);
 }
 
 #[tokio::test]

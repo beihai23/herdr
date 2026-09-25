@@ -270,6 +270,10 @@ impl TerminalRuntime {
         self.0.scroll_reset();
     }
 
+    pub fn clear_screen(&self) -> Result<(), String> {
+        self.0.clear_screen()
+    }
+
     pub fn set_scroll_offset_from_bottom(&self, lines: usize) {
         self.0.set_scroll_offset_from_bottom(lines);
     }
@@ -556,6 +560,10 @@ impl TerminalRuntime {
 
     pub fn cwd(&self) -> Option<std::path::PathBuf> {
         self.0.cwd()
+    }
+
+    pub fn cwd_for_persistence(&self) -> Option<std::path::PathBuf> {
+        self.0.cwd_for_persistence()
     }
 
     pub fn follow_cwd(&self) -> Option<std::path::PathBuf> {
